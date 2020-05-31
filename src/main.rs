@@ -136,8 +136,6 @@ fn main() -> ! {
                 for gui_item in items {
                     gui_item.compose(&mut widgets, &ui, &lua);
                 }
-
-                drop(lua); // release mutex
                 
                 platform.prepare_render(&ui, &window);
 
@@ -155,12 +153,10 @@ fn main() -> ! {
 
 struct RenderState {
     surface: wgpu::Surface,
-    // adapter: wgpu::Adapter,
     device:  wgpu::Device,
     queue:   wgpu::Queue,
     sc_desc: wgpu::SwapChainDescriptor,
     swap_chain: wgpu::SwapChain,
-    
     renderer: imgui_wgpu::Renderer,
 }
 
@@ -207,12 +203,10 @@ impl RenderState {
 
         Self {
             surface,
-            // adapter,
             device,
             queue,
             sc_desc,
             swap_chain,
-
             renderer,
         }
     }
