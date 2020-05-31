@@ -1,5 +1,3 @@
-#![warn(clippy::all)]
-
 use imgui::*;
 use imgui_wgpu::Renderer;
 
@@ -90,6 +88,10 @@ fn main() -> ! {
         platform.handle_event(imgui.io_mut(), &window, &event);
 
         match &event {
+            Event::NewEvents(_) => {
+                last_frame_time = imgui.io_mut().update_delta_time(last_frame_time);
+            },
+
             Event::WindowEvent { event, .. } => match *event {
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     hidpi_factor = scale_factor;
@@ -122,7 +124,6 @@ fn main() -> ! {
 
             Event::RedrawRequested(_) => {
 
-                last_frame_time = imgui.io_mut().update_delta_time(last_frame_time);
                 platform.prepare_frame(imgui.io_mut(), &window)
                     .expect("Failed to prepare frame.");
 
@@ -161,18 +162,6 @@ struct RenderState {
     swap_chain: wgpu::SwapChain,
     
     renderer: imgui_wgpu::Renderer,
-}
-
-impl AsRef<imgui_wgpu::Renderer> for RenderState {
-    fn as_ref(&self) -> &imgui_wgpu::Renderer {
-        &self.renderer
-    }
-}
-
-impl AsMut<imgui_wgpu::Renderer> for RenderState {
-    fn as_mut(&mut self) -> &mut imgui_wgpu::Renderer {
-        &mut self.renderer
-    }
 }
 
 impl RenderState {
