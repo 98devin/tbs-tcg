@@ -72,16 +72,37 @@ impl LuaPrintBuffer {
         }
     }
 
-    fn print_override<'lua>(&mut self, ctx: rlua::Context<'lua>, args: rlua::MultiValue<'lua>) -> rlua::Result<()> {
-        let mut str_args = Vec::with_capacity(args.len());
-        for arg_val in args {
-            let arg_str = ctx.coerce_string(arg_val)?;
-            let arg_str = arg_str.unwrap_or(ctx.create_string("nil")?);
-            str_args.push(arg_str.to_str()?.to_owned());
+    fn exec_lua_buffer(&mut self, lua: &rlua::Lua) {
+
+        // WTF: This way rust doesn't infer too strict
+        // a lifetime for the following closures.
+        let console_buffer = &self.console_buffer;
+        let printed_strings = &mut self.printed_strings;
+
+        match lua.context(|ctx: rlua::Context| {
+            let chunk = ctx.load(console_buffer.to_str());
+            let globals = ctx.globals();
+            ctx.scope(|scope| {
+                let print_override = scope.create_function_mut(
+                    |ctx, args: rlua::MultiValue| {
+                        let mut str_args = Vec::with_capacity(args.len());
+                        for arg_val in args {
+                            let arg_str = ctx.coerce_string(arg_val)?;
+                            let arg_str = arg_str.unwrap_or(ctx.create_string("nil")?);
+                            str_args.push(arg_str.to_str()?.to_owned());
+                        }
+                        printed_strings.push(str_args.join("\t"));
+                        Ok(())
+                    }
+                )?;
+                globals.set("print", print_override)?;
+                let chunk = chunk.set_environment(globals)?;
+                chunk.exec()
+            })
+        }) {
+            Ok(()) => (),
+            Err(e) => eprintln!("{}", e),
         }
-        self.printed_strings.push(str_args.join("\t"));
-        // println!("[Lua]: {}", &self.printed_strings.last().unwrap());
-        Ok(())
     }
 }
 
@@ -105,23 +126,8 @@ impl GuiWidget for LuaPrintBuffer {
             .build();
 
             if ui.button(im_str!("Execute"), [100.0, 20.0]) {
-                match lua.context(|ctx: rlua::Context| {
-                    let buffer = self.console_buffer.clone();
-                    let chunk = ctx.load(buffer.to_str());
-                    let globals = ctx.globals();
-                    ctx.scope(|scope| {
-                        let print_override =
-                            scope.create_function_mut(|ctx, args| self.print_override(ctx, args))?;
-                        globals.set("print", print_override)?;
-                        let chunk = chunk.set_environment(globals)?;
-                        chunk.exec()
-                    })
-                }) {
-                    Ok(()) => (),
-                    Err(e) => eprintln!("{}", e),
-                }
+                self.exec_lua_buffer(lua);
             }
-
 
             lua_window.end(&ui);
         }
@@ -133,13 +139,14 @@ impl GuiWidget for LuaPrintBuffer {
 
         if let Some(out_window) = out_window {
             
-            for output in &self.printed_strings {
-                ui.bullet();
-                ui.text(output);
-            }
-
             if ui.button(im_str!("Clear"), [100.0, 20.0]) {
                 self.printed_strings.clear();
+            }
+
+            ui.separator();
+
+            for output in &self.printed_strings {
+                ui.text(output);
             }
 
             out_window.end(&ui);
