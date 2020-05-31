@@ -11,7 +11,3 @@
 
 # don't care about persisting imgui details for now
 imgui.ini
-
-#Added by cargo
-
-/target

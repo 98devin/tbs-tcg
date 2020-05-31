@@ -1,39 +1,50 @@
 
 // use imgui::*;
 
+use std::sync::mpsc;
 
-type GuiItem = Box<dyn GuiWidget>;
+pub type GuiItem = Box<dyn Widget>;
 
+pub type WidgetChannel = mpsc::Sender<GuiItem>;
+pub type WidgetChannelAccess = parking_lot::Mutex<WidgetChannel>;
 
-pub trait GuiWidget: Send {
-    fn compose(self: Box<Self>, widgets: &mut ImguiWidgets, ui: &imgui::Ui, lua: &rlua::Lua);
+pub trait Widget: Send + Sync {
+    fn compose(self: Box<Self>, widgets: &WidgetChannel, ui: &imgui::Ui, lua: &rlua::Lua);
 }
 
-
-#[derive(Default)]
-pub struct ImguiWidgets {
-    items: Vec<GuiItem>,
+pub struct WidgetState {
+    sender: mpsc::Sender<GuiItem>,
+    receiver: mpsc::Receiver<GuiItem>,
+    received: Vec<GuiItem>,
 }
 
-impl ImguiWidgets {
+impl WidgetState {
     pub fn new() -> Self {
-        Default::default()
+        let (sender, receiver) = mpsc::channel();
+        Self {
+            sender,
+            receiver,
+            received: Vec::new(),
+        }
     }
 
-    pub fn add_widget(&mut self, widget: impl GuiWidget + 'static) {
-        self.items.push(Box::new(widget));
+    pub fn add_gui_item(&self, item: GuiItem) {
+        self.sender.send(item).unwrap();
     }
 
-    pub fn add_gui_item(&mut self, item: GuiItem) {
-        self.items.push(item);
+    pub fn iter_items(&mut self) -> impl Iterator<Item=GuiItem> + '_ {
+        self.received.drain(..)
     }
 
-    pub fn iter_items(&mut self) -> impl Iterator<Item=GuiItem> {
-        let num_items = self.items.len();
-        let old_items = std::mem::replace(&mut self.items, Vec::with_capacity(num_items));
-        old_items.into_iter()
+    pub fn refresh_items(&mut self) {
+        self.received.extend(self.receiver.try_iter());
+    }
+
+    pub fn make_widget_channel(&self) -> WidgetChannel {
+        self.sender.clone()
     }
 }
+
 
 
 pub struct ImguiDemoWindow {
@@ -41,17 +52,17 @@ pub struct ImguiDemoWindow {
 }
 
 impl ImguiDemoWindow {
-    pub fn new() -> Self {
-        Self { window_open: true }
+    pub fn new() -> Box<Self> {
+        Box::new(Self { window_open: true })
     }
 }
 
-impl GuiWidget for ImguiDemoWindow {
-    fn compose(mut self: Box<Self>, widgets: &mut ImguiWidgets, ui: &imgui::Ui, _lua: &rlua::Lua) {
+impl Widget for ImguiDemoWindow {
+    fn compose(mut self: Box<Self>, widgets: &WidgetChannel, ui: &imgui::Ui, _lua: &rlua::Lua) {
         ui.show_demo_window(&mut self.window_open);
         
         if self.window_open {
-            widgets.add_gui_item(self);
+            widgets.send(self).unwrap();
         }
     }
 }
@@ -64,12 +75,12 @@ pub struct LuaPrintBuffer {
 }
 
 impl LuaPrintBuffer {
-    pub fn new(name: impl Into<imgui::ImString>) -> Self {
-        Self {
+    pub fn new(name: impl Into<imgui::ImString>) -> Box<Self> {
+        Box::new(Self {
             window_name: name.into(),
             printed_strings: Vec::new(),
             console_buffer: imgui::ImString::default(),
-        }
+        })
     }
 
     fn exec_lua_buffer(&mut self, lua: &rlua::Lua) {
@@ -106,8 +117,8 @@ impl LuaPrintBuffer {
     }
 }
 
-impl GuiWidget for LuaPrintBuffer {
-    fn compose(mut self: Box<Self>, widgets: &mut ImguiWidgets, ui: &imgui::Ui, lua: &rlua::Lua) {
+impl Widget for LuaPrintBuffer {
+    fn compose(mut self: Box<Self>, widgets: &WidgetChannel, ui: &imgui::Ui, lua: &rlua::Lua) {
         use imgui::*;
 
         let lua_window = Window::new(&self.window_name)
@@ -152,6 +163,55 @@ impl GuiWidget for LuaPrintBuffer {
             out_window.end(&ui);
         }
 
-        widgets.add_gui_item(self);
+        widgets.send(self).unwrap();
+    }
+}
+
+#[derive(Clone)]
+pub struct CloneWindow {
+    id: usize,
+    name: imgui::ImString,
+    pos: [f32; 2],
+}
+
+impl CloneWindow {
+    pub fn new(id: usize, pos: [f32; 2]) -> Box<Self> {
+        Box::new(Self {
+            id, pos, name: imgui::im_str!("Clone Window: #{}", id)
+        })
+    }
+}
+
+impl Widget for CloneWindow {
+    fn compose(self: Box<Self>, widgets: &WidgetChannel, ui: &imgui::Ui, _lua: &rlua::Lua) {
+        use imgui::*;
+
+        let clone_window = Window::new(&self.name)
+            .position(self.pos, Condition::Appearing)
+            .size([230.0, 90.0], Condition::Appearing)
+            .begin(&ui);
+
+        let mut should_close = false;
+
+        if let Some(clone_window) = clone_window {
+
+            should_close = ui.button(im_str!("Close"), [100.0, 50.0]);
+
+            ui.same_line(110.0);
+
+            if ui.button(im_str!("Split"), [100.0, 50.0]) {
+                let pos = ui.window_pos();
+                widgets.send(CloneWindow::new(self.id * 2 + 1, pos)).unwrap();
+                widgets.send(CloneWindow::new(self.id * 2 + 2,
+                    [pos[0] + 25.0, pos[1] + 25.0])).unwrap();
+                should_close = true;
+            }
+
+            clone_window.end(&ui);
+        }
+
+        if !should_close {
+            widgets.send(self).unwrap();
+        }
     }
 }

@@ -14,6 +14,7 @@ use legion::prelude::*;
 
 mod gui;
 
+
 type LuaAccess = parking_lot::Mutex<rlua::Lua>;
 
 
@@ -65,18 +66,23 @@ fn main() -> ! {
     let universe = Universe::new();
     let mut world = universe.create_world();
 
-    let mut widgets = gui::ImguiWidgets::new();
+    let mut widgets = gui::WidgetState::new();
 
     // Initial Setup
     {
         world.resources.insert(lua);
+        world.resources.insert(gui::WidgetChannelAccess::new(widgets.make_widget_channel()));
 
-        widgets.add_widget(
+        widgets.add_gui_item(
             gui::ImguiDemoWindow::new()
         );
 
-        widgets.add_widget(
+        widgets.add_gui_item(
             gui::LuaPrintBuffer::new(im_str!("Hello from Lua"))
+        );
+
+        widgets.add_gui_item(
+            gui::CloneWindow::new(0, [100.0, 100.0])
         );
     }
 
@@ -132,9 +138,10 @@ fn main() -> ! {
                 let lua = world.resources.get::<LuaAccess>().unwrap();
                 let lua = lua.lock();
 
-                let items = widgets.iter_items(); // takes ownership
-                for gui_item in items {
-                    gui_item.compose(&mut widgets, &ui, &lua);
+                widgets.refresh_items();
+                let channel = widgets.make_widget_channel();
+                for gui_item in widgets.iter_items() {
+                    gui_item.compose(&channel, &ui, &lua);
                 }
                 
                 platform.prepare_render(&ui, &window);
@@ -192,7 +199,7 @@ impl RenderState {
 
         let swap_chain = device.create_swap_chain(&surface, &sc_desc);
 
-        let clear_color = wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 1.0 };
+        let clear_color = wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 0.2 };
         let renderer = Renderer::new(
             imgui, 
             &device, 
