@@ -38,6 +38,8 @@ fn main() -> ! {
         width: 1280, height: 800,
     });
 
+    window.set_resizable(true);
+
     
     let mut hidpi_factor = 1.0f64;
     let mut imgui = imgui::Context::create();
@@ -95,9 +97,11 @@ fn main() -> ! {
                     hidpi_factor = scale_factor;
                     build_default_font(&mut imgui, hidpi_factor);
                 },
-                
+
                 WindowEvent::Resized(new_size) => {
-                    window.set_inner_size(new_size);
+                    // WTF: Apparently, this actually causes a panic (!?)
+                    // Fortunately it also appears to be unnecessary...
+                    // window.set_inner_size(new_size); 
                     render_state.handle_window_resize(new_size);
                 },
 
@@ -113,17 +117,17 @@ fn main() -> ! {
                     *control_flow = ControlFlow::Exit;
                 }
 
-                _ => (),
+                _ => (), //eprintln!("{:?}", event),
             },
 
             Event::MainEventsCleared => {
                 window.request_redraw();
+                platform.prepare_frame(imgui.io_mut(), &window)
+                .expect("Failed to prepare frame.");
             },
 
             Event::RedrawRequested(_) => {
 
-                platform.prepare_frame(imgui.io_mut(), &window)
-                    .expect("Failed to prepare frame.");
 
                 let ui = imgui.frame();
 
