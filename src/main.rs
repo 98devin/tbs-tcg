@@ -10,12 +10,7 @@ use winit::{
     window::Window,
 };
 
-use legion::prelude::*;
-
 mod gui;
-
-
-type LuaAccess = parking_lot::Mutex<rlua::Lua>;
 
 
 fn build_default_font(imgui: &mut imgui::Context, hidpi_factor: f64) {
@@ -61,18 +56,15 @@ fn main() -> ! {
         RenderState::init(&window, &mut imgui)
     );
     
-    let lua = LuaAccess::new(rlua::Lua::new());
+    let lua = rlua::Lua::new();
     
-    let universe = Universe::new();
-    let mut world = universe.create_world();
+    // TODO: add ECS processing features
+    let mut _world = hecs::World::new();
 
     let mut widgets = gui::WidgetState::new();
 
     // Initial Setup
     {
-        world.resources.insert(lua);
-        world.resources.insert(gui::WidgetChannelAccess::new(widgets.make_widget_channel()));
-
         widgets.add_gui_item(
             gui::ImguiDemoWindow::new()
         );
@@ -87,7 +79,7 @@ fn main() -> ! {
     }
 
     let mut last_frame_time = std::time::Instant::now();
-    
+
     // mainloop
     event_loop.run(move |event, _, control_flow| {
 
@@ -134,9 +126,6 @@ fn main() -> ! {
                     .expect("Failed to prepare frame.");
 
                 let ui = imgui.frame();
-                
-                let lua = world.resources.get::<LuaAccess>().unwrap();
-                let lua = lua.lock();
 
                 widgets.refresh_items();
                 let channel = widgets.make_widget_channel();
@@ -151,11 +140,9 @@ fn main() -> ! {
 
             _ => (),
         };
+
     });
 }
-
-
-
 
 
 struct RenderState {

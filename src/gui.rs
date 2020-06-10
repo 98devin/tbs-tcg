@@ -6,7 +6,6 @@ use std::sync::mpsc;
 pub type GuiItem = Box<dyn Widget>;
 
 pub type WidgetChannel = mpsc::Sender<GuiItem>;
-pub type WidgetChannelAccess = parking_lot::Mutex<WidgetChannel>;
 
 pub trait Widget: Send + Sync {
     fn compose(self: Box<Self>, widgets: &WidgetChannel, ui: &imgui::Ui, lua: &rlua::Lua);
