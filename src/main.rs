@@ -10,7 +10,9 @@ use winit::{
     window::Window,
 };
 
-mod gui;
+
+pub(crate) mod gui;
+pub(crate) mod shade;
 
 
 fn build_default_font(imgui: &mut imgui::Context, hidpi_factor: f64) {
@@ -58,6 +60,12 @@ fn main() -> ! {
         RenderState::init(&window, &mut imgui)
     );
     
+    
+    let mut shaders = shade::ShaderCache::new(&render_state.device);
+    shaders.load("trivial.vert");
+    shaders.load("trivial.frag");
+
+
     let lua = rlua::Lua::new();
     
     // TODO: add ECS processing features
