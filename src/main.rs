@@ -103,6 +103,7 @@ fn main() -> ! {
                     // Fortunately it also appears to be unnecessary...
                     // window.set_inner_size(new_size); 
                     render_state.handle_window_resize(new_size);
+                    eprintln!("resized: {:?}", new_size);
                 },
 
                 WindowEvent::KeyboardInput {
@@ -122,13 +123,12 @@ fn main() -> ! {
 
             Event::MainEventsCleared => {
                 window.request_redraw();
-                platform.prepare_frame(imgui.io_mut(), &window)
-                .expect("Failed to prepare frame.");
             },
-
+            
             Event::RedrawRequested(_) => {
-
-
+                platform.prepare_frame(imgui.io_mut(), &window)
+                    .expect("Failed to prepare frame.");
+                
                 let ui = imgui.frame();
 
                 widgets.refresh_items();
