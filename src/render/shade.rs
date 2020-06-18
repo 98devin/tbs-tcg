@@ -1,5 +1,6 @@
 
-use std::collections::hash_map::{self, HashMap};
+use parking_lot::Mutex;
+use chashmap::CHashMap;
 
 
 // This is probably enough...?
@@ -59,33 +60,52 @@ pub struct ShaderCacheEntry {
 
 
 impl ShaderCacheEntry {
-
+    
     pub fn module(&self) -> &wgpu::ShaderModule {
         &self.module
     }
-
+    
     pub fn descriptor(&self) -> wgpu::ProgrammableStageDescriptor {
         wgpu::ProgrammableStageDescriptor {
             module: &self.module,
             entry_point: "main",
         }
     }
-
+    
 }
 
 
 
-pub struct ShaderCache<'d> {
-    device: &'d wgpu::Device,
-    compiler: shaderc::Compiler,
+pub struct ShaderCache {
+    device: &'static wgpu::Device,
+
+    // WTF: See below. We want to be able to keep the interface
+    // to the `load` method as taking a shared reference.
+    // So, we need to manually lock this compiler. This shouldn't be able
+    // to cause any deadlocks, since the shader cache will probably be used
+    // from only one thread anyway (?)
+    // TODO: Switch out for RefCell...?
+    compiler: Mutex<shaderc::Compiler>,
+    
     options: shaderc::CompileOptions<'static>,
-    cache: HashMap<&'static str, ShaderCacheEntry>,
+
+    // WTF: We only ever need immutable borrows of the ShaderCacheEntries
+    // themselves, but previously this would have required either
+    // - mutable borrows for the HashMap itself, preventing multiple accesses at once, or
+    // - immutable interface which locks the entire table, causing similar problems.
+    //
+    // With CHashMap, the locking seems to be done at the per-key level,
+    // which is exactly the kind of mechanism we want.
+    cache: CHashMap<&'static str, ShaderCacheEntry>,
 }
 
 
-impl<'d> ShaderCache<'d> {
 
-    pub fn new(device: &'d wgpu::Device) -> Self {
+pub type ShaderRef<'a> = chashmap::ReadGuard<'a, &'static str, ShaderCacheEntry>;
+
+impl ShaderCache {
+
+    pub fn new(device: &'static wgpu::Device) -> Self {
         let mut options = shaderc::CompileOptions::new().expect("Failed to set glsl compiler options.");
         options.set_auto_bind_uniforms(false);
         options.set_include_callback(load_shader_file);
@@ -101,7 +121,8 @@ impl<'d> ShaderCache<'d> {
         }
 
         let compiler = shaderc::Compiler::new().expect("Failed to initialize glsl compiler.");
-        let cache    = HashMap::new();
+        let compiler = Mutex::new(compiler);
+        let cache    = CHashMap::new();
 
         Self { 
             device, 
@@ -115,11 +136,10 @@ impl<'d> ShaderCache<'d> {
         &mut self.options
     }
 
-    pub fn load(&mut self, name: &'static str) -> &ShaderCacheEntry {        
-        let vacant = match self.cache.entry(name) {
-            hash_map::Entry::Occupied(o) => return o.into_mut(),
-            hash_map::Entry::Vacant(v) => v,
-        };
+    pub fn load(&self, name: &'static str) -> ShaderRef {        
+        if self.cache.contains_key(name) {
+            return self.cache.get(name).unwrap()
+        }
 
         let resolved_file = load_shader_file(name, shaderc::IncludeType::Standard, "", 0)
             .expect("Failed to load shader resource.");
@@ -136,7 +156,9 @@ impl<'d> ShaderCache<'d> {
         // TODO: Write out to spirv file so we don't have to always recompile?
         // let spirv_path = glsl_path.with_extension("spv");
         
-        let preprocessed = self.compiler.preprocess(
+        let mut compiler = self.compiler.lock();
+
+        let preprocessed = compiler.preprocess(
             &resolved_file.content,
             &resolved_file.resolved_name,
             "main",
@@ -147,7 +169,7 @@ impl<'d> ShaderCache<'d> {
             eprintln!("{}", preprocessed.get_warning_messages());
         }
         
-        let spirv = self.compiler.compile_into_spirv(
+        let spirv = compiler.compile_into_spirv(
             &resolved_file.content,
             shader_type,
             &resolved_file.resolved_name,
@@ -162,13 +184,10 @@ impl<'d> ShaderCache<'d> {
         let shader_module =
             self.device.create_shader_module(spirv.as_binary());
 
-        vacant.insert(ShaderCacheEntry {
+        self.cache.insert_new(name, ShaderCacheEntry {
             module: shader_module,
-        })
-    }
+        });
 
-    pub fn try_load(&self, name: &'static str) -> Option<&ShaderCacheEntry> {
-        self.cache.get(name)
+        self.cache.get(name).unwrap()
     }
-
 }

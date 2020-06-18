@@ -1,5 +1,4 @@
 use imgui::*;
-use imgui_wgpu::Renderer;
 
 use imgui_winit_support::{WinitPlatform, HiDpiMode};
 
@@ -12,7 +11,10 @@ use winit::{
 
 
 pub(crate) mod gui;
-pub(crate) mod shade;
+pub(crate) mod render;
+
+
+use render::RenderCore;
 
 
 fn build_default_font(imgui: &mut imgui::Context, hidpi_factor: f64) {
@@ -56,15 +58,11 @@ fn main() -> ! {
         HiDpiMode::Default,
     );
 
-    let mut render_state = futures::executor::block_on(
-        RenderState::init(&window, &mut imgui)
+    let mut renderer = futures::executor::block_on(
+        RenderCore::init(&window, &mut imgui)
     );
     
-    
-    let mut shaders = shade::ShaderCache::new(&render_state.device);
-    shaders.load("trivial.vert");
-    shaders.load("trivial.frag");
-
+    let _tri = render::TriangleRenderer::new(&mut renderer);
 
     let lua = rlua::Lua::new();
     
@@ -110,7 +108,7 @@ fn main() -> ! {
                     // WTF: Apparently, this actually causes a panic (!?)
                     // Fortunately it also appears to be unnecessary...
                     // window.set_inner_size(new_size); 
-                    render_state.handle_window_resize(new_size);
+                    renderer.handle_window_resize(new_size);
                     eprintln!("resized: {:?}", new_size);
                 },
 
@@ -147,7 +145,7 @@ fn main() -> ! {
                 
                 platform.prepare_render(&ui, &window);
 
-                render_state.draw_ui(ui);
+                renderer.draw_ui(ui);
             },
 
             _ => (),
@@ -156,107 +154,3 @@ fn main() -> ! {
     });
 }
 
-
-struct RenderState {
-    surface: wgpu::Surface,
-    device:  wgpu::Device,
-    queue:   wgpu::Queue,
-    sc_desc: wgpu::SwapChainDescriptor,
-    swap_chain: wgpu::SwapChain,
-    renderer: imgui_wgpu::Renderer,
-}
-
-impl RenderState {
-
-    async fn init(window: &Window, imgui: &mut imgui::Context) -> Self {
-
-        let surface = wgpu::Surface::create(window);
-        
-        let adapter = wgpu::Adapter::request(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::Default,
-                compatible_surface: Some(&surface),
-            },
-            wgpu::BackendBit::PRIMARY,
-        )
-        .await
-        .expect("Failed to request wgpu::Adapter.");
-
-        let adapter_info = adapter.get_info();
-        println!("{:?}", adapter_info);
-
-        let (device, mut queue) = adapter.request_device(&Default::default()).await;
-
-        let size = window.inner_size();
-        let sc_desc = wgpu::SwapChainDescriptor {
-            usage:  wgpu::TextureUsage::OUTPUT_ATTACHMENT,
-            format: wgpu::TextureFormat::Bgra8Unorm, // WTF: required to some degree by imgui_wgpu ?
-            width:  size.width  as u32,
-            height: size.height as u32,
-            present_mode: wgpu::PresentMode::Mailbox,
-        };
-
-        let swap_chain = device.create_swap_chain(&surface, &sc_desc);
-
-        let clear_color = wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 0.2 };
-        let renderer = Renderer::new(
-            imgui, 
-            &device, 
-            &mut queue, 
-            sc_desc.format, 
-            Some(clear_color),
-        );
-
-        Self {
-            surface,
-            device,
-            queue,
-            sc_desc,
-            swap_chain,
-            renderer,
-        }
-    }
-
-    fn draw_ui(&mut self, ui: imgui::Ui) {
-
-        let Self {
-            device,
-            queue,
-            renderer, 
-            swap_chain, 
-            .. 
-        } = self;
-
-        let frame = match swap_chain.get_next_texture() {
-            Ok(frame) => frame,
-            Err(e) => {
-                eprintln!("dropped frame: {:?}", e);
-                return;
-            },
-        };
-
-        let mut encoder = device.create_command_encoder(
-            &wgpu::CommandEncoderDescriptor { label: Some("imgui") }
-        );
-
-        let draw_data = ui.render();
-        renderer
-            .render(draw_data, device, &mut encoder, &frame.view)
-            .expect("Failed to draw ui.");
-
-        queue.submit(&[encoder.finish()]);
-    }
-
-    fn handle_window_resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-
-        self.sc_desc = wgpu::SwapChainDescriptor {
-            width:  size.width,
-            height: size.height,
-            ..self.sc_desc
-        };
-
-        self.swap_chain =
-            self.device.create_swap_chain(&self.surface, &self.sc_desc);
-    }
-
-}
