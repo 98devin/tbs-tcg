@@ -1,10 +1,9 @@
 #version 450
 
-const vec3 RED = vec3(1.0, 0.0, 0.0);
-
-layout(location = 0) out vec4 outColor;
+layout(location = 0) in  vec4 v_color;
+layout(location = 0) out vec4 f_color;
 
 void main()
 {
-    outColor = vec4(RED, 1.0);
+    f_color = v_color;
 }

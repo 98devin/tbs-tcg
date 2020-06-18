@@ -6,7 +6,7 @@ pub(crate) mod shade;
 
 
 pub trait Encodable {
-    fn encode(&mut self, encoder: &mut wgpu::CommandEncoder);
+    fn encode(self, encoder: &mut wgpu::CommandEncoder);
 }
 
 
@@ -17,7 +17,7 @@ pub struct RenderCore {
     
     surface: wgpu::Surface,
     sc_desc: wgpu::SwapChainDescriptor,
-    swap_chain: wgpu::SwapChain,
+    pub swap_chain: wgpu::SwapChain,
 
     pub shaders: shade::ShaderCache,
 
@@ -65,13 +65,13 @@ impl RenderCore {
 
         let swap_chain = device.create_swap_chain(&surface, &sc_desc);
 
-        let clear_color = wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 0.2 };
+        // let clear_color = wgpu::Color { r: 0.1, g: 0.2, b: 0.3, a: 0.2 };
         let imgui_renderer = imgui_wgpu::Renderer::new(
             imgui, 
             &device, 
             &mut queue, 
-            sc_desc.format, 
-            Some(clear_color),
+            sc_desc.format,
+            None,
         );
 
         let shaders = shade::ShaderCache::new(device);
@@ -87,7 +87,7 @@ impl RenderCore {
         }
     }
 
-    pub fn draw_ui(&mut self, ui: imgui::Ui) {
+    pub fn draw_ui(&mut self, ui: imgui::Ui, frame: &wgpu::SwapChainOutput) {
 
         let Self {
             device,
@@ -96,14 +96,6 @@ impl RenderCore {
             swap_chain, 
             .. 
         } = self;
-
-        let frame = match swap_chain.get_next_texture() {
-            Ok(frame) => frame,
-            Err(e) => {
-                eprintln!("dropped frame: {:?}", e);
-                return;
-            },
-        };
 
         let mut encoder = device.create_command_encoder(
             &wgpu::CommandEncoderDescriptor { label: Some("imgui") }
@@ -129,7 +121,19 @@ impl RenderCore {
             self.device.create_swap_chain(&self.surface, &self.sc_desc);
     }
 
+    pub fn draw<E: Encodable>(&mut self, e: E) {
+        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: None,
+        });
+
+        e.encode(&mut encoder);
+
+        self.queue.submit(&[encoder.finish()]);
+    }
+
 }
+
+
 
 
 pub struct TriangleRenderer {
@@ -198,6 +202,44 @@ impl TriangleRenderer {
         Self {
             layout,
             pipeline,
+        }
+    }
+}
+
+
+
+pub struct TriangleEncoder<'r, 't> {
+    renderer: &'r TriangleRenderer,
+    target: &'t wgpu::TextureView,
+}
+
+impl Encodable for TriangleEncoder<'_, '_> {
+    fn encode(self, encoder: &mut wgpu::CommandEncoder) {
+        use wgpu::*;
+
+        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
+            depth_stencil_attachment: None,
+            color_attachments: &[
+                RenderPassColorAttachmentDescriptor {
+                    attachment: self.target,
+                    resolve_target: None,
+                    load_op: LoadOp::Clear,
+                    store_op: StoreOp::Store,
+                    clear_color: Color::BLACK,
+                }
+            ],
+        });
+
+        pass.set_pipeline(&self.renderer.pipeline);
+        pass.draw(0..3, 0..1);
+    }
+}
+
+impl TriangleRenderer {
+    pub fn with_target<'r, 't>(&'r self, target: &'t wgpu::TextureView) -> TriangleEncoder<'r, 't> {
+        TriangleEncoder {
+            target, 
+            renderer: self,
         }
     }
 }

@@ -62,7 +62,7 @@ fn main() -> ! {
         RenderCore::init(&window, &mut imgui)
     );
     
-    let _tri = render::TriangleRenderer::new(&mut renderer);
+    let tri = render::TriangleRenderer::new(&mut renderer);
 
     let lua = rlua::Lua::new();
     
@@ -132,6 +132,17 @@ fn main() -> ! {
             },
             
             Event::RedrawRequested(_) => {
+
+                let frame = match renderer.swap_chain.get_next_texture() {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        eprintln!("Dropped frame!");
+                        return;
+                    }
+                };
+
+                renderer.draw(tri.with_target(&frame.view));                
+
                 platform.prepare_frame(imgui.io_mut(), &window)
                     .expect("Failed to prepare frame.");
                 
@@ -145,7 +156,7 @@ fn main() -> ! {
                 
                 platform.prepare_render(&ui, &window);
 
-                renderer.draw_ui(ui);
+                renderer.draw_ui(ui, &frame);
             },
 
             _ => (),
