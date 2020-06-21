@@ -9,7 +9,7 @@ pub mod render;
 
 use render::RenderCore;
 use render::window::WindowState;
-use render::window::gui::GuiState;
+use render::gui;
 
 
 fn main() -> ! {
@@ -17,14 +17,26 @@ fn main() -> ! {
     let event_loop = EventLoop::new();
 
     let mut window_state = WindowState::new(&event_loop);
-
+    
     let mut renderer = futures::executor::block_on(RenderCore::init(&mut window_state));
     
-    let mut gui = GuiState::new();
-    let tri = render::TriangleRenderer::new(&mut renderer);
+    let sc_format = renderer.sc_desc.format;
 
-    let mut lua = rlua::Lua::new();
-    
+    let mut basic_renderer = render::BasicRenderer::new(&mut renderer);
+    let mut imgui_renderer = gui::imgui_wgpu::ImguiRenderer::new(
+        &mut renderer,
+        sc_format,
+        None,
+    );
+
+    imgui_renderer.build_font_texture(
+        &mut renderer,
+        &mut window_state.imgui
+    );
+
+
+    let mut gui = gui::GuiComponentState::new();
+
     // TODO: add ECS processing features
     let mut _world = hecs::World::new();
 
@@ -33,7 +45,11 @@ fn main() -> ! {
     // mainloop
     event_loop.run(move |event, _, control_flow| {
 
-        window_state.handle_event(&event);
+        window_state.platform.handle_event(
+            window_state.imgui.io_mut(),
+            &window_state.window,
+            &event,
+        );
         
         match &event {
             Event::NewEvents(_) => {
@@ -43,6 +59,7 @@ fn main() -> ! {
             Event::WindowEvent { event, .. } => match *event {
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     window_state.update_scale_factor(scale_factor);
+                    imgui_renderer.build_font_texture(&mut renderer, &mut window_state.imgui);
                 },
 
                 WindowEvent::Resized(new_size) => {
@@ -69,13 +86,13 @@ fn main() -> ! {
             },
 
             Event::MainEventsCleared => {
-                window_state.window().request_redraw();
+                window_state.window.request_redraw();
             },
             
             Event::RedrawRequested(_) => {
 
-                let frame = match renderer.swap_chain.get_next_texture() {
-                    Ok(frame) => frame,
+                let frame = match renderer.swap_chain.get_next_frame() {
+                    Ok(frame) => frame.output,
                     Err(_) => {
                         eprintln!("Dropped frame!");
                         return;
@@ -83,8 +100,16 @@ fn main() -> ! {
                 };
 
                 renderer.sequence()
-                    .draw(tri.with_target(&frame.view))
-                    .draw(window_state.stage(&mut gui, &mut lua, &frame.view))
+                    .draw(render::BasicStage {
+                        basic_renderer: &basic_renderer,
+                        render_target: &frame.view,
+                    })
+                    .draw(gui::imgui_wgpu::ImguiStage {
+                        window_state: &mut window_state,
+                        imgui_renderer: &mut imgui_renderer,
+                        widget: &mut gui,
+                        render_target: &frame.view,
+                    })
                     .finish();
 
             },
@@ -94,4 +119,5 @@ fn main() -> ! {
 
     });
 }
+
 

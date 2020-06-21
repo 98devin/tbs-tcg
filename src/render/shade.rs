@@ -169,20 +169,29 @@ impl ShaderCache {
             eprintln!("{}", preprocessed.get_warning_messages());
         }
         
-        let spirv = compiler.compile_into_spirv(
+        let spirv = match compiler.compile_into_spirv(
             &resolved_file.content,
             shader_type,
             &resolved_file.resolved_name,
             "main",
             Some(&self.options),
-        ).expect("Failed to compile shader!");
-        
+        ) {
+            Ok(spirv) => spirv,
+            Err(e) => {
+                panic!("Failed to compile shader! {}", e);
+            },
+        };
+
         if spirv.get_num_warnings() != 0 {
             eprintln!("{}", spirv.get_warning_messages());
         }
 
+        eprintln!("Successfully compiled shader: {}.", name);
+
         let shader_module =
-            self.device.create_shader_module(spirv.as_binary());
+            self.device.create_shader_module(
+                wgpu::ShaderModuleSource::SpirV(spirv.as_binary())
+            );
 
         self.cache.insert_new(name, ShaderCacheEntry {
             module: shader_module,

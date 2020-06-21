@@ -1,12 +1,15 @@
 
-use winit::window::Window;
+use cgmath::prelude::*;
+use cgmath::{Point3, Vector3, Matrix4};
 
-pub(crate) mod shade;
-pub(crate) mod window;
+pub mod shade;
+pub mod window;
+pub mod gui;
 
 
 pub trait Vertex {
     fn buffer_descriptor() -> wgpu::VertexBufferDescriptor<'static>;
+    fn attributes() -> &'static [wgpu::VertexAttributeDescriptor];
 }
 
 pub trait RenderStage {
@@ -15,12 +18,11 @@ pub trait RenderStage {
 
 
 pub struct RenderCore {
-    
     pub device: &'static wgpu::Device,
-    queue: wgpu::Queue,
+    pub queue: wgpu::Queue,
     
     surface: wgpu::Surface,
-    sc_desc: wgpu::SwapChainDescriptor,
+    pub sc_desc: wgpu::SwapChainDescriptor,
     pub swap_chain: wgpu::SwapChain,
 
     pub shaders: shade::ShaderCache,
@@ -32,14 +34,18 @@ impl RenderCore {
 
     pub async fn init(window_state: &mut window::WindowState) -> Self {
 
-        let surface = wgpu::Surface::create(window_state.window());
-        
-        let adapter = wgpu::Adapter::request(
+        let instance = wgpu::Instance::new(
+            wgpu::BackendBit::PRIMARY,
+        );
+
+        let surface = unsafe { instance.create_surface(&window_state.window) };
+
+        let adapter = instance.request_adapter(
             &wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::Default,
                 compatible_surface: Some(&surface),
             },
-            wgpu::BackendBit::PRIMARY,
+            wgpu::UnsafeExtensions::disallow(),
         )
         .await
         .expect("Failed to request wgpu::Adapter.");
@@ -47,17 +53,22 @@ impl RenderCore {
         let adapter_info = adapter.get_info();
         println!("{:?}", adapter_info);
 
-        let (device, mut queue) = adapter.request_device(&Default::default()).await;
+        let (device, queue) = adapter.request_device(
+            &Default::default(), 
+            None, // trace_path
+        )
+        .await
+        .expect("Failed to request wgpu Device/Queue.");
         
         // WTF: We never need to deallocate this device during the program,
         // so it's not a big deal if we leak the heap reference. If necessary,
         // a Drop implementation for RenderCore could also handle this.
         let device = Box::leak(Box::new(device));
 
-        let size = window_state.window().inner_size();
+        let size = window_state.window.inner_size();
         let sc_desc = wgpu::SwapChainDescriptor {
             usage:  wgpu::TextureUsage::OUTPUT_ATTACHMENT,
-            format: wgpu::TextureFormat::Bgra8Unorm, // WTF: required to some degree ?
+            format: wgpu::TextureFormat::Bgra8Unorm, // WTF: for wider compatibility?
             width:  size.width  as u32,
             height: size.height as u32,
             present_mode: wgpu::PresentMode::Mailbox,
@@ -65,21 +76,14 @@ impl RenderCore {
 
         let swap_chain = device.create_swap_chain(&surface, &sc_desc);
 
-
-        // TODO: Move this somewhere better?
-        // Unfortunately we can't easily eliminate all cross-cutting
-        // concerns between rendering and the window, in this case...
-        window_state.init_renderer(&device, &mut queue, sc_desc.format);
-
-
         let shaders = shade::ShaderCache::new(device);
 
         RenderCore {
-            surface,
             device,
             queue,
-            sc_desc,
             shaders,
+            surface,
+            sc_desc,
             swap_chain,
         }
     }
@@ -123,7 +127,9 @@ impl RenderSequence<'_> {
 
     #[inline]
     pub fn finish(self) {
-        self.renderer.queue.submit(&[self.encoder.finish()]);
+        self.renderer.queue.submit(
+            std::iter::once(self.encoder.finish())
+        );
     }
 }
 
@@ -131,43 +137,165 @@ impl RenderSequence<'_> {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
-struct SimpleVertex {
-    position: [f32; 3],
-    color:    [f32; 3],
+struct BasicVertex {
+    position: Point3<f32>,
+    color:    Point3<f32>,
 }
 
-unsafe impl bytemuck::Pod for SimpleVertex {}
-unsafe impl bytemuck::Zeroable for SimpleVertex {}
+unsafe impl bytemuck::Pod for BasicVertex {}
+unsafe impl bytemuck::Zeroable for BasicVertex {}
 
-impl Vertex for SimpleVertex {
+impl Vertex for BasicVertex {
+    fn attributes() -> &'static [wgpu::VertexAttributeDescriptor] {
+        &wgpu::vertex_attr_array![
+            0 => Float3,
+            1 => Float3
+        ]
+    }
+
     fn buffer_descriptor() -> wgpu::VertexBufferDescriptor<'static> {
         use wgpu::*;
         VertexBufferDescriptor {
-            stride: std::mem::size_of::<SimpleVertex>() as _,
+            stride: std::mem::size_of::<BasicVertex>() as _,
             step_mode: InputStepMode::Vertex,
-            attributes: &vertex_attr_array![
-                0 => Float3,
-                1 => Float3
-            ],
+            attributes: Self::attributes(),
         }
+    }
+}
+
+#[repr(C)]
+#[derive(Copy, Clone)]
+pub struct BasicCamera {
+    view_matrix: Matrix4<f32>,
+    pos: Point3<f32>,
+    dir: Vector3<f32>,
+    top: Vector3<f32>,
+}
+
+unsafe impl bytemuck::Pod for BasicCamera {}
+unsafe impl bytemuck::Zeroable for BasicCamera {}
+
+impl BasicCamera {
+    pub fn new(pos: Point3<f32>, dir: Vector3<f32>, top: Vector3<f32>) -> Self {
+        assert_eq!(true, dir.is_perpendicular(top));
+        Self {
+            view_matrix: Matrix4::look_at_dir(pos, dir.normalize(), top.normalize()),
+            pos, dir, top,
+        }
+    }
+
+    pub fn translate(&mut self, dpos: Vector3<f32>) {
+        self.pos += dpos;
+        self.view_matrix.concat_self(&Matrix4::from_translation(dpos));
+    }
+
+    pub fn translate_rel(&mut self, drel: Vector3<f32>) {
+        let dxt = self.dir.cross(self.top);
+        self.translate(
+            drel.x * dxt +
+            drel.y * self.dir +
+            drel.z * self.top
+        );
+    }
+
+    pub fn yaw(&mut self, degrees: f32) {
+        let rot = Matrix4::from_axis_angle(self.top, cgmath::Deg(degrees));
+        self.dir = rot.transform_vector(self.dir);
+        self.view_matrix.concat_self(&rot);
+    }
+
+    pub fn pitch(&mut self, degrees: f32) {
+        let dxt = self.dir.cross(self.top);
+        let rot = Matrix4::from_axis_angle(dxt, cgmath::Deg(degrees));
+        self.top = rot.transform_vector(self.top);
+        self.dir = rot.transform_vector(self.dir);
+        self.view_matrix.concat_self(&rot);
+    }
+
+    pub fn roll(&mut self, degrees: f32) {
+        let rot = Matrix4::from_axis_angle(self.dir, cgmath::Deg(degrees));
+        self.top = rot.transform_vector(self.top);
+        self.view_matrix.concat_self(&rot);
+    }
+}
+
+    
+pub trait Bindable {
+    fn bind_type() -> wgpu::BindingType;
+    fn bind(&self) -> wgpu::BindingResource;
+}
+
+
+pub struct Uniform<T> {
+    buffer: wgpu::Buffer,
+    data: T,
+}
+
+impl<T> std::ops::Deref for Uniform<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> std::ops::DerefMut for Uniform<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+impl<T: Sized + bytemuck::Pod> Uniform<T> {
+    fn new(device: &wgpu::Device, data: T) -> Self {
+        let buffer = device.create_buffer_with_data(
+            bytemuck::bytes_of(&data),
+            wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST
+        );
+
+        Self {
+            buffer, data,
+        }
+    }
+
+    fn refresh(&self, core: &RenderCore) {
+        core.queue.write_buffer(
+            &self.buffer,
+            0 as wgpu::BufferAddress,
+            bytemuck::bytes_of(&self.data)
+        );
+    }
+}
+
+impl<T: Sized> Bindable for Uniform<T> {
+    fn bind_type() -> wgpu::BindingType {
+        wgpu::BindingType::UniformBuffer {
+            dynamic: false,
+            min_binding_size: std::num::NonZeroU64::new(
+                std::mem::size_of::<T>() as u64
+            ),
+        }
+    }
+
+    fn bind(&self) -> wgpu::BindingResource {
+        wgpu::BindingResource::Buffer(self.buffer.slice(..))
     }
 }
 
 
 
-pub struct TriangleRenderer {
+pub struct BasicRenderer {
+    // camera: Uniform<BasicCamera>,
     vertices: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline,
 }
 
-impl TriangleRenderer {
+impl BasicRenderer {
     pub fn new(core: &mut RenderCore) -> Self {
         use wgpu::*;
         
         let vertex_data = &[
-            SimpleVertex { position: [-1.0, -1.0, 0.0], color: [1.0, 0.0, 0.0] },
-            SimpleVertex { position: [ 0.0,  1.0, 0.0], color: [0.0, 1.0, 0.0] },
-            SimpleVertex { position: [ 1.0, -1.0, 0.0], color: [0.0, 0.0, 1.0] },
+            BasicVertex { position: Point3::new(-1.0, -1.0, 0.0), color: Point3::new(1.0, 0.0, 0.0) },
+            BasicVertex { position: Point3::new( 1.0, -1.0, 0.0), color: Point3::new(0.0, 0.0, 1.0) },
+            BasicVertex { position: Point3::new( 0.0,  1.0, 0.0), color: Point3::new(0.0, 1.0, 0.0) },
         ];
 
         let vertices = core.device.create_buffer_with_data(
@@ -181,8 +309,8 @@ impl TriangleRenderer {
 
         let layout = core.device.create_pipeline_layout(&layout_descriptor);
 
-        let vert_module = core.shaders.load("trivial.vert");
-        let frag_module = core.shaders.load("trivial.frag");
+        let vert_module = core.shaders.load("basic.vert");
+        let frag_module = core.shaders.load("basic.frag");
 
         let render_descriptor = RenderPipelineDescriptor {
             layout: &layout,
@@ -192,7 +320,7 @@ impl TriangleRenderer {
             
             rasterization_state: Some(RasterizationStateDescriptor {
                 front_face: FrontFace::Ccw,
-                cull_mode: CullMode::None, // nothing to cull
+                cull_mode: CullMode::Back,
                 ..Default::default()
             }),
             
@@ -220,7 +348,7 @@ impl TriangleRenderer {
             vertex_state: VertexStateDescriptor {
                 index_format: IndexFormat::Uint16,
                 vertex_buffers: &[
-                    SimpleVertex::buffer_descriptor(),
+                    BasicVertex::buffer_descriptor(),
                 ],
             },
             
@@ -231,7 +359,7 @@ impl TriangleRenderer {
 
         let pipeline = core.device.create_render_pipeline(&render_descriptor);
 
-        Self {
+        BasicRenderer {
             vertices,
             pipeline,
         }
@@ -240,12 +368,12 @@ impl TriangleRenderer {
 
 
 
-pub struct TriangleStage<'r, 't> {
-    renderer: &'r TriangleRenderer,
-    target: &'t wgpu::TextureView,
+pub struct BasicStage<'r, 't> {
+    pub basic_renderer: &'r BasicRenderer,
+    pub render_target: &'t wgpu::TextureView,
 }
 
-impl RenderStage for TriangleStage<'_, '_> {
+impl RenderStage for BasicStage<'_, '_> {
     fn encode(self, _core: &mut RenderCore, encoder: &mut wgpu::CommandEncoder) {
         use wgpu::*;
 
@@ -253,26 +381,18 @@ impl RenderStage for TriangleStage<'_, '_> {
             depth_stencil_attachment: None,
             color_attachments: &[
                 RenderPassColorAttachmentDescriptor {
-                    attachment: self.target,
+                    attachment: self.render_target,
                     resolve_target: None,
-                    load_op: LoadOp::Clear,
-                    store_op: StoreOp::Store,
-                    clear_color: Color::BLACK,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color::BLACK),
+                        store: true,
+                    },
                 }
             ],
         });
 
-        pass.set_pipeline(&self.renderer.pipeline);
-        pass.set_vertex_buffer(0, &self.renderer.vertices, 0, 0);
+        pass.set_pipeline(&self.basic_renderer.pipeline);
+        pass.set_vertex_buffer(0, self.basic_renderer.vertices.slice(..));
         pass.draw(0..3, 0..1);
-    }
-}
-
-impl TriangleRenderer {
-    pub fn with_target<'r, 't>(&'r self, target: &'t wgpu::TextureView) -> TriangleStage<'r, 't> {
-        TriangleStage {
-            target, 
-            renderer: self,
-        }
     }
 }

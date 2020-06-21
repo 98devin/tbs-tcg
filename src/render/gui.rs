@@ -1,28 +1,36 @@
 
 use imgui::*;
 
+pub mod imgui_wgpu;
+
+
+//
+//
+// Widgets and the overall debug gui state struct
+//
+//
+
 
 pub trait Widget {
     fn compose(&mut self, ui: &imgui::Ui, lua: &rlua::Lua);
 }
 
-
-pub struct GuiState {
+pub struct GuiComponentState {
     demo: ImguiDemoWindow,
     lua_print: LuaPrintBuffer,
 }
 
 
-impl GuiState {
+impl GuiComponentState {
     pub fn new() -> Self {
-        Self {
+        GuiComponentState {
             demo: ImguiDemoWindow { window_open: true },
             lua_print: LuaPrintBuffer::new(im_str!("Hello from lua")),
         }
     }
 }
 
-impl Widget for GuiState {
+impl Widget for GuiComponentState {
     fn compose(&mut self, ui: &imgui::Ui, lua: &rlua::Lua) {
         self.demo.compose(ui, lua);
         self.lua_print.compose(ui, lua);
