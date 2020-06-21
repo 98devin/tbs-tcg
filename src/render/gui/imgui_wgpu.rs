@@ -172,7 +172,7 @@ impl ImguiRenderer {
                     attributes: &vertex_attr_array![
                         0 => Float2,
                         1 => Float2,
-                        2 => Uint
+                        2 => Uchar4
                     ],
                 }],
             },
