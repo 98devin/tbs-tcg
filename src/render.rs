@@ -1,11 +1,11 @@
 
-use cgmath::prelude::*;
-use cgmath::{Point3, Vector3, Matrix4};
+use nalgebra_glm as glm;
+
 
 pub mod shade;
 pub mod window;
 pub mod gui;
-
+pub mod bytes;
 
 pub trait Vertex {
     fn buffer_descriptor() -> wgpu::VertexBufferDescriptor<'static>;
@@ -138,12 +138,11 @@ impl RenderSequence<'_> {
 #[repr(C)]
 #[derive(Clone, Copy)]
 struct BasicVertex {
-    position: Point3<f32>,
-    color:    Point3<f32>,
+    position: glm::Vec3,
+    color:    glm::Vec3,
 }
 
-unsafe impl bytemuck::Pod for BasicVertex {}
-unsafe impl bytemuck::Zeroable for BasicVertex {}
+unsafe impl bytes::IntoBytes for BasicVertex {}
 
 impl Vertex for BasicVertex {
     fn attributes() -> &'static [wgpu::VertexAttributeDescriptor] {
@@ -164,58 +163,62 @@ impl Vertex for BasicVertex {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug)]
 pub struct BasicCamera {
-    view_matrix: Matrix4<f32>,
-    pos: Point3<f32>,
-    dir: Vector3<f32>,
-    top: Vector3<f32>,
+    view_matrix: glm::Mat4,
+    pos: glm::Vec3,
+    dir: glm::Vec3,
+    top: glm::Vec3,
 }
 
-unsafe impl bytemuck::Pod for BasicCamera {}
-unsafe impl bytemuck::Zeroable for BasicCamera {}
+unsafe impl bytes::IntoBytes for BasicCamera {}
 
 impl BasicCamera {
-    pub fn new(pos: Point3<f32>, dir: Vector3<f32>, top: Vector3<f32>) -> Self {
-        assert_eq!(true, dir.is_perpendicular(top));
+    pub fn new(pos: glm::Vec3, target: glm::Vec3, top: glm::Vec3) -> Self {
+        let dir = (target - pos).normalize();
+        assert_eq!(true, glm::are_orthogonal(&dir, &top, 0.001));
         Self {
-            view_matrix: Matrix4::look_at_dir(pos, dir.normalize(), top.normalize()),
+            view_matrix: glm::look_at_lh(&pos, &target, &top),
             pos, dir, top,
         }
     }
 
-    pub fn translate(&mut self, dpos: Vector3<f32>) {
-        self.pos += dpos;
-        self.view_matrix.concat_self(&Matrix4::from_translation(dpos));
+    fn refresh_view_matrix(&mut self) {
+        self.view_matrix = glm::look_at_lh(&self.pos, &(self.pos + self.dir), &self.top);
     }
 
-    pub fn translate_rel(&mut self, drel: Vector3<f32>) {
-        let dxt = self.dir.cross(self.top);
+    pub fn translate(&mut self, dpos: glm::Vec3) {
+        self.pos += dpos;
+        self.refresh_view_matrix();
+    }
+
+    pub fn translate_rel(&mut self, drel: glm::Vec3) {
+        let dxt = self.dir.cross(&self.top);
         self.translate(
             drel.x * dxt +
-            drel.y * self.dir +
-            drel.z * self.top
+            drel.y * self.top +
+            drel.z * self.dir
         );
     }
 
     pub fn yaw(&mut self, degrees: f32) {
-        let rot = Matrix4::from_axis_angle(self.top, cgmath::Deg(degrees));
-        self.dir = rot.transform_vector(self.dir);
-        self.view_matrix.concat_self(&rot);
+        let rot = glm::rotation(degrees, &self.top);
+        self.dir = rot.transform_vector(&self.dir);
+        self.refresh_view_matrix();
     }
 
     pub fn pitch(&mut self, degrees: f32) {
-        let dxt = self.dir.cross(self.top);
-        let rot = Matrix4::from_axis_angle(dxt, cgmath::Deg(degrees));
-        self.top = rot.transform_vector(self.top);
-        self.dir = rot.transform_vector(self.dir);
-        self.view_matrix.concat_self(&rot);
+        let dxt = self.dir.cross(&self.top);
+        let rot = glm::rotation(degrees, &dxt);
+        self.top = rot.transform_vector(&self.top);
+        self.dir = rot.transform_vector(&self.dir);
+        self.refresh_view_matrix();
     }
 
     pub fn roll(&mut self, degrees: f32) {
-        let rot = Matrix4::from_axis_angle(self.dir, cgmath::Deg(degrees));
-        self.top = rot.transform_vector(self.top);
-        self.view_matrix.concat_self(&rot);
+        let rot = glm::rotation(degrees, &self.dir);
+        self.top = rot.transform_vector(&self.top);
+        self.refresh_view_matrix();
     }
 }
 
@@ -224,7 +227,6 @@ pub trait Bindable {
     fn bind_type() -> wgpu::BindingType;
     fn bind(&self) -> wgpu::BindingResource;
 }
-
 
 pub struct Uniform<T> {
     buffer: wgpu::Buffer,
@@ -244,10 +246,10 @@ impl<T> std::ops::DerefMut for Uniform<T> {
     }
 }
 
-impl<T: Sized + bytemuck::Pod> Uniform<T> {
+impl<T: Sized + bytes::IntoBytes> Uniform<T> {
     fn new(device: &wgpu::Device, data: T) -> Self {
         let buffer = device.create_buffer_with_data(
-            bytemuck::bytes_of(&data),
+            bytes::of(&data),
             wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST
         );
 
@@ -260,7 +262,7 @@ impl<T: Sized + bytemuck::Pod> Uniform<T> {
         core.queue.write_buffer(
             &self.buffer,
             0 as wgpu::BufferAddress,
-            bytemuck::bytes_of(&self.data)
+            bytes::of(&self.data)
         );
     }
 }
@@ -283,28 +285,77 @@ impl<T: Sized> Bindable for Uniform<T> {
 
 
 pub struct BasicRenderer {
-    // camera: Uniform<BasicCamera>,
+    pub camera: Uniform<BasicCamera>,
+    pub project: Uniform<glm::Mat4>,
+    uniform_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline,
 }
 
 impl BasicRenderer {
+    pub fn adjust_screen_res(&mut self, size: winit::dpi::PhysicalSize<u32>) {
+        *self.project = glm::perspective_fov_lh_zo(
+            100.0, 
+            size.width as f32, 
+            size.height as f32, 
+            1.0, 
+            10.0,
+        );
+    }
+
     pub fn new(core: &mut RenderCore) -> Self {
         use wgpu::*;
         
         let vertex_data = &[
-            BasicVertex { position: Point3::new(-1.0, -1.0, 0.0), color: Point3::new(1.0, 0.0, 0.0) },
-            BasicVertex { position: Point3::new( 1.0, -1.0, 0.0), color: Point3::new(0.0, 0.0, 1.0) },
-            BasicVertex { position: Point3::new( 0.0,  1.0, 0.0), color: Point3::new(0.0, 1.0, 0.0) },
+            BasicVertex { position: glm::vec3(-1.0, -1.0, 1.0), color: glm::vec3(1.0, 0.0, 0.0) },
+            BasicVertex { position: glm::vec3( 1.0, -1.0, 1.0), color: glm::vec3(0.0, 0.0, 1.0) },
+            BasicVertex { position: glm::vec3( 0.0,  1.0, 1.0), color: glm::vec3(0.0, 1.0, 0.0) },
         ];
 
         let vertices = core.device.create_buffer_with_data(
-            bytemuck::bytes_of(vertex_data),
+            bytes::of(vertex_data),
             BufferUsage::VERTEX | BufferUsage::COPY_DST,
         );
 
+        let camera = Uniform::new(core.device, BasicCamera::new(
+            glm::vec3(0.0,  0.0, -5.0),
+            glm::vec3(0.0,  0.0,  1.0),
+            glm::vec3(0.0, -1.0,  0.0),
+        ));
+
+        let project = Uniform::new(core.device,
+            glm::perspective_fov_lh_zo(100.0, core.sc_desc.width as f32, core.sc_desc.height as f32, 1.0, 10.0)
+        );
+
+        let uniform_descriptor = BindGroupLayoutDescriptor {
+            label: Some("Camera uniform"),
+            bindings: &[
+                wgpu::BindGroupLayoutEntry::new(
+                    0, wgpu::ShaderStage::VERTEX,
+                    Uniform::<BasicCamera>::bind_type(),
+                ),
+                wgpu::BindGroupLayoutEntry::new(
+                    1, wgpu::ShaderStage::VERTEX,
+                    Uniform::<glm::Mat4>::bind_type(),
+                ),
+            ],
+        };
+
+        let uniform_layout = core.device.create_bind_group_layout(&uniform_descriptor);
+
+        let uniform_bind_descriptor = wgpu::BindGroupDescriptor {
+            label: Some("Camera uniform"),
+            layout: &uniform_layout,
+            bindings: &[
+                Binding { binding: 0, resource: camera.bind() },
+                Binding { binding: 1, resource: project.bind() },
+            ],
+        };
+
+        let uniform_group = core.device.create_bind_group(&uniform_bind_descriptor);
+
         let layout_descriptor = PipelineLayoutDescriptor {
-            bind_group_layouts: &[]
+            bind_group_layouts: &[&uniform_layout],
         };
 
         let layout = core.device.create_pipeline_layout(&layout_descriptor);
@@ -360,6 +411,9 @@ impl BasicRenderer {
         let pipeline = core.device.create_render_pipeline(&render_descriptor);
 
         BasicRenderer {
+            camera,
+            project,
+            uniform_group,
             vertices,
             pipeline,
         }
@@ -374,8 +428,11 @@ pub struct BasicStage<'r, 't> {
 }
 
 impl RenderStage for BasicStage<'_, '_> {
-    fn encode(self, _core: &mut RenderCore, encoder: &mut wgpu::CommandEncoder) {
+    fn encode(self, core: &mut RenderCore, encoder: &mut wgpu::CommandEncoder) {
         use wgpu::*;
+
+        self.basic_renderer.camera.refresh(core);
+        self.basic_renderer.project.refresh(core);
 
         let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
             depth_stencil_attachment: None,
@@ -392,6 +449,7 @@ impl RenderStage for BasicStage<'_, '_> {
         });
 
         pass.set_pipeline(&self.basic_renderer.pipeline);
+        pass.set_bind_group(0, &self.basic_renderer.uniform_group, &[]);
         pass.set_vertex_buffer(0, self.basic_renderer.vertices.slice(..));
         pass.draw(0..3, 0..1);
     }

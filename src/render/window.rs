@@ -8,8 +8,6 @@ use winit::{
 
 use imgui_winit_support::*;
 
-use crate::render::*;
-
 
 
 pub struct WindowState {
@@ -58,8 +56,13 @@ impl WindowState {
         }
     }
 
-    pub fn update_frame_time(&mut self, time: std::time::Instant) -> std::time::Instant {
-        self.imgui.io_mut().update_delta_time(time)
+    pub fn update_frame_time(&mut self, time: std::time::Instant)
+        -> (std::time::Instant, std::time::Duration)
+    {  
+        let io = self.imgui.io_mut();
+        let inst = io.update_delta_time(time);
+        let dura = std::time::Duration::from_secs_f32(io.delta_time);
+        (inst, dura)
     }
 
     pub fn update_scale_factor(&mut self, scale_factor: f64) {

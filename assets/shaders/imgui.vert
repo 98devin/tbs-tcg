@@ -1,8 +1,6 @@
+
 #version 450
 
-out gl_PerVertex {
-    vec4 gl_Position;
-};
 
 layout(set = 0, binding = 0) uniform View {
     mat4 u_Matrix;
@@ -14,6 +12,11 @@ layout(location = 2) in uvec4 a_Color;
 
 layout(location = 0) out vec2 v_UV;
 layout(location = 1) out vec4 v_Color;
+
+out gl_PerVertex {
+    vec4 gl_Position;
+};
+
 
 void main() {
     v_UV = a_UV;

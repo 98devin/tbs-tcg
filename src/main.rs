@@ -1,9 +1,10 @@
 
+
+use nalgebra_glm as glm;
 use winit::{
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
 };
-
 
 pub mod render;
 
@@ -41,6 +42,7 @@ fn main() -> ! {
     let mut _world = hecs::World::new();
 
     let mut last_frame_time = std::time::Instant::now();
+    let mut last_frame_duration = std::time::Duration::new(0, 0);
 
     // mainloop
     event_loop.run(move |event, _, control_flow| {
@@ -53,7 +55,9 @@ fn main() -> ! {
         
         match &event {
             Event::NewEvents(_) => {
-                last_frame_time = window_state.update_frame_time(last_frame_time);
+                let (frame_time, frame_dura) = window_state.update_frame_time(last_frame_time);
+                last_frame_time = frame_time;
+                last_frame_duration = frame_dura;
             },
 
             Event::WindowEvent { event, .. } => match *event {
@@ -67,6 +71,7 @@ fn main() -> ! {
                     // Fortunately it also appears to be unnecessary...
                     // window.set_inner_size(new_size); 
                     renderer.handle_window_resize(new_size);
+                    basic_renderer.adjust_screen_res(new_size);
                     eprintln!("resized: {:?}", new_size);
                 },
 
@@ -80,6 +85,58 @@ fn main() -> ! {
                 }
                 | WindowEvent::CloseRequested => {
                     *control_flow = ControlFlow::Exit;
+                }
+
+
+                WindowEvent::KeyboardInput {
+                    input: KeyboardInput {
+                        virtual_keycode: Some(k),
+                        state: ElementState::Pressed,
+                        ..
+                    },
+                    ..
+                } => {
+                    match k {
+                        VirtualKeyCode::Q =>
+                            basic_renderer.camera.roll(5.0 * last_frame_duration.as_secs_f32()),
+                        VirtualKeyCode::E =>
+                            basic_renderer.camera.roll(-5.0 * last_frame_duration.as_secs_f32()),
+                        VirtualKeyCode::W =>
+                            basic_renderer.camera.translate_rel(
+                                glm::vec3(0.0, 0.0, 5.0) * last_frame_duration.as_secs_f32()
+                            ),
+                        VirtualKeyCode::S =>
+                            basic_renderer.camera.translate_rel(
+                                glm::vec3(0.0, 0.0, -5.0) * last_frame_duration.as_secs_f32()
+                            ),
+                        VirtualKeyCode::A =>
+                            basic_renderer.camera.translate_rel(
+                                glm::vec3(-5.0, 0.0, 0.0) * last_frame_duration.as_secs_f32()
+                            ),
+                        VirtualKeyCode::D =>
+                            basic_renderer.camera.translate_rel(
+                                glm::vec3(5.0, 0.0, 0.0) * last_frame_duration.as_secs_f32()
+                            ),
+                        VirtualKeyCode::LShift =>
+                            basic_renderer.camera.translate_rel(
+                                glm::vec3(0.0, -5.0, 0.0) * last_frame_duration.as_secs_f32()
+                            ),
+                        VirtualKeyCode::Space =>
+                            basic_renderer.camera.translate_rel(
+                                glm::vec3(0.0, 5.0, 0.0) * last_frame_duration.as_secs_f32()
+                            ),
+
+                        VirtualKeyCode::Left =>
+                            basic_renderer.camera.yaw(5.0 * last_frame_duration.as_secs_f32()),
+                        VirtualKeyCode::Right =>
+                            basic_renderer.camera.yaw(-5.0 * last_frame_duration.as_secs_f32()),
+                        VirtualKeyCode::Up =>
+                            basic_renderer.camera.pitch(-5.0 * last_frame_duration.as_secs_f32()),
+                        VirtualKeyCode::Down =>
+                            basic_renderer.camera.pitch(5.0 * last_frame_duration.as_secs_f32()),
+
+                        _ => (),
+                    }
                 }
 
                 _ => (), //eprintln!("{:?}", event),

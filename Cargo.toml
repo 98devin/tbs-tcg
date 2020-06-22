@@ -16,8 +16,8 @@ hecs = "0.2.12"
 shaderc = "0.6.2"
 chashmap = "2.2.2"
 parking_lot = "0.10.2"
-bytemuck = "1.2.0"
 cgmath = "0.17.0"
+nalgebra-glm = "0.7.0"
 
 [dependencies.wgpu]
 git = "https://github.com/gfx-rs/wgpu-rs"

@@ -11,8 +11,7 @@ use imgui::{
 };
 
 use wgpu::*;
-use crate::render::{self, gui, window};
-
+use crate::render::{self, gui, window, bytes};
 
 /// A container for a bindable texture to be used internally.
 pub struct ImguiTexture {
@@ -226,7 +225,7 @@ impl ImguiRenderer {
         core.queue.write_buffer(
             &self.uniform_buffer,
             0,
-            bytemuck::bytes_of(&matrix)
+            bytes::of(&matrix)
         );
 
         // Start a new renderpass and prepare it properly.
@@ -321,22 +320,13 @@ impl ImguiRenderer {
 
     /// Upload the vertex buffer to the gPU.
     fn upload_vertex_buffer(&self, device: &Device, vertices: &[DrawVert]) -> Buffer {
-        
-        #[repr(transparent)]
-        #[derive(Copy, Clone, Debug)]
-        struct V(DrawVert);
-        unsafe impl bytemuck::Pod for V {}
-        unsafe impl bytemuck::Zeroable for V {}
-
-        let vertices: &[V] = unsafe { std::mem::transmute(vertices) };
-        let data = bytemuck::cast_slice(&vertices);
-        
+        let data = bytes::of_slice(vertices);
         device.create_buffer_with_data(data, BufferUsage::VERTEX)
     }
 
     /// Upload the index buffer to the GPU.
     fn upload_index_buffer(&self, device: &Device, indices: &[DrawIdx]) -> Buffer {
-        let data = bytemuck::cast_slice(indices);
+        let data = bytes::of_slice(indices);
         device.create_buffer_with_data(data, BufferUsage::INDEX)
     }
 
