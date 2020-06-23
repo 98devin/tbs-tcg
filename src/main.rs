@@ -97,44 +97,20 @@ fn main() -> ! {
                     },
                     ..
                 } => {
+                    let ratio = last_frame_duration.as_secs_f32();
                     match k {
-                        VirtualKeyCode::Q =>
-                            basic_renderer.camera.roll(5.0 * last_frame_duration.as_secs_f32()),
-                        VirtualKeyCode::E =>
-                            basic_renderer.camera.roll(-5.0 * last_frame_duration.as_secs_f32()),
-                        VirtualKeyCode::W =>
-                            basic_renderer.camera.translate_rel(
-                                glm::vec3(0.0, 0.0, 5.0) * last_frame_duration.as_secs_f32()
-                            ),
-                        VirtualKeyCode::S =>
-                            basic_renderer.camera.translate_rel(
-                                glm::vec3(0.0, 0.0, -5.0) * last_frame_duration.as_secs_f32()
-                            ),
-                        VirtualKeyCode::A =>
-                            basic_renderer.camera.translate_rel(
-                                glm::vec3(-5.0, 0.0, 0.0) * last_frame_duration.as_secs_f32()
-                            ),
-                        VirtualKeyCode::D =>
-                            basic_renderer.camera.translate_rel(
-                                glm::vec3(5.0, 0.0, 0.0) * last_frame_duration.as_secs_f32()
-                            ),
-                        VirtualKeyCode::LShift =>
-                            basic_renderer.camera.translate_rel(
-                                glm::vec3(0.0, -5.0, 0.0) * last_frame_duration.as_secs_f32()
-                            ),
-                        VirtualKeyCode::Space =>
-                            basic_renderer.camera.translate_rel(
-                                glm::vec3(0.0, 5.0, 0.0) * last_frame_duration.as_secs_f32()
-                            ),
-
                         VirtualKeyCode::Left =>
-                            basic_renderer.camera.yaw(5.0 * last_frame_duration.as_secs_f32()),
+                            basic_renderer.camera.gimbal_lr(-10.0 * ratio),
                         VirtualKeyCode::Right =>
-                            basic_renderer.camera.yaw(-5.0 * last_frame_duration.as_secs_f32()),
+                            basic_renderer.camera.gimbal_lr(10.0 * ratio),
                         VirtualKeyCode::Up =>
-                            basic_renderer.camera.pitch(-5.0 * last_frame_duration.as_secs_f32()),
+                            basic_renderer.camera.gimbal_ud(-10.0 * ratio),
                         VirtualKeyCode::Down =>
-                            basic_renderer.camera.pitch(5.0 * last_frame_duration.as_secs_f32()),
+                            basic_renderer.camera.gimbal_ud(10.0 * ratio),
+                        VirtualKeyCode::Equals =>
+                            basic_renderer.camera.zoom(0.5 * ratio),
+                        VirtualKeyCode::Minus =>
+                            basic_renderer.camera.zoom(-0.5 * ratio),
 
                         _ => (),
                     }
