@@ -20,13 +20,18 @@ pub struct GuiComponentState {
     lua_print: LuaPrintBuffer,
 }
 
-
 impl GuiComponentState {
     pub fn new() -> Self {
         GuiComponentState {
             demo: ImguiDemoWindow { window_open: true },
             lua_print: LuaPrintBuffer::new(im_str!("Hello from lua")),
         }
+    }
+}
+
+impl Default for GuiComponentState {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

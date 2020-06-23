@@ -222,11 +222,7 @@ impl ImguiRenderer {
             [0.0, 0.0, 1.0, 0.0],
             [-1.0, 1.0, 0.0, 1.0],
         ];
-        core.queue.write_buffer(
-            &self.uniform_buffer,
-            0,
-            bytes::of(&matrix)
-        );
+        core.queue.write_buffer(&self.uniform_buffer, 0, bytes::of(&matrix));
 
         // Start a new renderpass and prepare it properly.
         let mut rpass = encoder.begin_render_pass(&RenderPassDescriptor {

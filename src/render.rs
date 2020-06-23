@@ -166,9 +166,9 @@ impl Vertex for BasicVertex {
 #[derive(Copy, Clone, Debug)]
 pub struct BasicCamera {
     view_matrix: glm::Mat4,
-    pos: glm::Vec3,
-    dir: glm::Vec3,
-    top: glm::Vec3,
+    pos:    glm::Vec3,
+    target: glm::Vec3,
+    top:    glm::Vec3,
 }
 
 unsafe impl bytes::IntoBytes for BasicCamera {}
@@ -179,45 +179,67 @@ impl BasicCamera {
         assert_eq!(true, glm::are_orthogonal(&dir, &top, 0.001));
         Self {
             view_matrix: glm::look_at_lh(&pos, &target, &top),
-            pos, dir, top,
+            pos, target, top,
         }
     }
 
     fn refresh_view_matrix(&mut self) {
-        self.view_matrix = glm::look_at_lh(&self.pos, &(self.pos + self.dir), &self.top);
+        self.view_matrix = glm::look_at_lh(&self.pos, &self.target, &self.top);
     }
 
     pub fn translate(&mut self, dpos: glm::Vec3) {
         self.pos += dpos;
+        self.target += dpos;
         self.refresh_view_matrix();
     }
 
     pub fn translate_rel(&mut self, drel: glm::Vec3) {
-        let dxt = self.dir.cross(&self.top);
+        let dir = self.target - self.pos;
+        let dxt = dir.cross(&self.top);
         self.translate(
             drel.x * dxt +
             drel.y * self.top +
-            drel.z * self.dir
+            drel.z * dir
         );
     }
 
     pub fn yaw(&mut self, degrees: f32) {
         let rot = glm::rotation(degrees, &self.top);
-        self.dir = rot.transform_vector(&self.dir);
+        self.target = rot.transform_vector(&self.target);
         self.refresh_view_matrix();
     }
 
     pub fn pitch(&mut self, degrees: f32) {
-        let dxt = self.dir.cross(&self.top);
-        let rot = glm::rotation(degrees, &dxt);
+        let dxt = (self.target - self.pos).cross(&self.top);
+        let rot = glm::rotation(degrees, &dxt.normalize());
         self.top = rot.transform_vector(&self.top);
-        self.dir = rot.transform_vector(&self.dir);
+        self.target = rot.transform_vector(&self.target);
         self.refresh_view_matrix();
     }
 
     pub fn roll(&mut self, degrees: f32) {
-        let rot = glm::rotation(degrees, &self.dir);
+        let rot = glm::rotation(degrees, &(self.target - self.pos).normalize());
         self.top = rot.transform_vector(&self.top);
+        self.refresh_view_matrix();
+    }
+
+
+    pub fn zoom(&mut self, ratio: f32) {
+        self.pos = glm::lerp(&self.pos, &self.target, ratio);
+        self.refresh_view_matrix();
+    }
+
+    pub fn gimbal_ud(&mut self, degrees: f32) {
+        let dir = self.target - self.pos;
+        let dxt = dir.cross(&self.top);
+        let rot = glm::rotation(degrees, &dxt.normalize());
+        self.pos = rot.transform_vector(&(self.pos - self.target)) + self.target;
+        self.refresh_view_matrix();
+    }
+
+    pub fn gimbal_lr(&mut self, degrees: f32) {
+        let rot = glm::rotation(degrees, &self.top);
+        self.pos = rot.transform_vector(&(self.pos - self.target)) + self.target;
         self.refresh_view_matrix();
     }
 }
@@ -289,13 +311,14 @@ pub struct BasicRenderer {
     pub project: Uniform<glm::Mat4>,
     uniform_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
     pipeline: wgpu::RenderPipeline,
 }
 
 impl BasicRenderer {
     pub fn adjust_screen_res(&mut self, size: winit::dpi::PhysicalSize<u32>) {
         *self.project = glm::perspective_fov_lh_zo(
-            100.0, 
+            120.0, 
             size.width as f32, 
             size.height as f32, 
             1.0, 
@@ -305,21 +328,64 @@ impl BasicRenderer {
 
     pub fn new(core: &mut RenderCore) -> Self {
         use wgpu::*;
-        
-        let vertex_data = &[
-            BasicVertex { position: glm::vec3(-1.0, -1.0, 1.0), color: glm::vec3(1.0, 0.0, 0.0) },
-            BasicVertex { position: glm::vec3( 1.0, -1.0, 1.0), color: glm::vec3(0.0, 0.0, 1.0) },
-            BasicVertex { position: glm::vec3( 0.0,  1.0, 1.0), color: glm::vec3(0.0, 1.0, 0.0) },
-        ];
+
+        let vertex_data = {
+            #[inline(always)]
+            fn v(p: glm::Vec3, c: glm::Vec3) -> BasicVertex {
+                BasicVertex { position: p, color: c }
+            }
+            [
+                // cube top 4 vertices
+                v(glm::vec3( 1.0,  1.0,  1.0), glm::vec3(1.0, 1.0, 1.0)),
+                v(glm::vec3(-1.0,  1.0,  1.0), glm::vec3(0.0, 1.0, 1.0)),
+                v(glm::vec3( 1.0,  1.0, -1.0), glm::vec3(1.0, 1.0, 0.0)),
+                v(glm::vec3(-1.0,  1.0, -1.0), glm::vec3(0.0, 1.0, 0.0)),
+                
+                // cube bottom 4 vertices
+                v(glm::vec3( 1.0, -1.0,  1.0), glm::vec3(1.0, 0.0, 1.0)),
+                v(glm::vec3(-1.0, -1.0,  1.0), glm::vec3(0.0, 0.0, 1.0)),
+                v(glm::vec3( 1.0, -1.0, -1.0), glm::vec3(1.0, 0.0, 0.0)),
+                v(glm::vec3(-1.0, -1.0, -1.0), glm::vec3(0.0, 0.0, 0.0)),
+            ]
+        };
 
         let vertices = core.device.create_buffer_with_data(
-            bytes::of(vertex_data),
-            BufferUsage::VERTEX | BufferUsage::COPY_DST,
+            bytes::of_slice(&vertex_data), BufferUsage::VERTEX,
+        );
+
+        let index_data: [u16; 6*2*3] = [
+            // cube top triangles
+            0, 1, 2,
+            1, 3, 2,
+            
+            // cube front triangles
+            0, 4, 1,
+            4, 5, 1,
+
+            // cube left triangles
+            0, 2, 6,
+            4, 0, 6,
+
+            // cube bottom triangles
+            4, 6, 5,
+            5, 6, 7,
+
+            // cube back triangles
+            2, 3, 6,
+            7, 6, 3,
+
+            // cube right triangles
+            1, 7, 3,
+            5, 7, 1,
+        ];
+
+        let indices = core.device.create_buffer_with_data(
+            bytes::of_slice(&index_data), BufferUsage::INDEX,
         );
 
         let camera = Uniform::new(core.device, BasicCamera::new(
             glm::vec3(0.0,  0.0, -5.0),
-            glm::vec3(0.0,  0.0,  1.0),
+            glm::vec3(0.0,  0.0,  0.0),
             glm::vec3(0.0, -1.0,  0.0),
         ));
 
@@ -415,6 +481,7 @@ impl BasicRenderer {
             project,
             uniform_group,
             vertices,
+            indices,
             pipeline,
         }
     }
@@ -450,7 +517,8 @@ impl RenderStage for BasicStage<'_, '_> {
 
         pass.set_pipeline(&self.basic_renderer.pipeline);
         pass.set_bind_group(0, &self.basic_renderer.uniform_group, &[]);
+        pass.set_index_buffer(self.basic_renderer.indices.slice(..));
         pass.set_vertex_buffer(0, self.basic_renderer.vertices.slice(..));
-        pass.draw(0..3, 0..1);
+        pass.draw_indexed(0..6*3*2, 0, 0..1);
     }
 }
