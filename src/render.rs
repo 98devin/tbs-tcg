@@ -6,6 +6,7 @@ pub mod shade;
 pub mod window;
 pub mod gui;
 pub mod bytes;
+pub mod cache;
 
 pub trait Vertex {
     fn buffer_descriptor() -> wgpu::VertexBufferDescriptor<'static>;
@@ -164,82 +165,62 @@ impl Vertex for BasicVertex {
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
-pub struct BasicCamera {
-    view_matrix: glm::Mat4,
+pub struct GimbalCamera {
+    view: glm::Mat4,
     pos:    glm::Vec3,
-    target: glm::Vec3,
+    center: glm::Vec3,
+    dir:    glm::Vec3,
     top:    glm::Vec3,
 }
 
-unsafe impl bytes::IntoBytes for BasicCamera {}
+unsafe impl bytes::IntoBytes for GimbalCamera {}
 
-impl BasicCamera {
-    pub fn new(pos: glm::Vec3, target: glm::Vec3, top: glm::Vec3) -> Self {
-        let dir = (target - pos).normalize();
-        assert_eq!(true, glm::are_orthogonal(&dir, &top, 0.001));
-        Self {
-            view_matrix: glm::look_at_lh(&pos, &target, &top),
-            pos, target, top,
+impl GimbalCamera {
+    pub fn new(pos: glm::Vec3, center: glm::Vec3, top: glm::Vec3) -> Self {
+        let dir = (center - pos).normalize();
+        GimbalCamera {
+            view: glm::look_at_lh(&pos, &center, &top),
+            pos, center, dir, top,
         }
     }
 
     fn refresh_view_matrix(&mut self) {
-        self.view_matrix = glm::look_at_lh(&self.pos, &self.target, &self.top);
+        self.view = glm::look_at_lh(&self.pos, &(self.pos + self.dir), &self.top);
     }
 
     pub fn translate(&mut self, dpos: glm::Vec3) {
         self.pos += dpos;
-        self.target += dpos;
         self.refresh_view_matrix();
     }
 
     pub fn translate_rel(&mut self, drel: glm::Vec3) {
-        let dir = self.target - self.pos;
-        let dxt = dir.cross(&self.top);
+        let dxt = self.dir.cross(&self.top);
         self.translate(
             drel.x * dxt +
             drel.y * self.top +
-            drel.z * dir
+            drel.z * self.dir
         );
     }
 
-    pub fn yaw(&mut self, degrees: f32) {
-        let rot = glm::rotation(degrees, &self.top);
-        self.target = rot.transform_vector(&self.target);
-        self.refresh_view_matrix();
-    }
-
-    pub fn pitch(&mut self, degrees: f32) {
-        let dxt = (self.target - self.pos).cross(&self.top);
-        let rot = glm::rotation(degrees, &dxt.normalize());
-        self.top = rot.transform_vector(&self.top);
-        self.target = rot.transform_vector(&self.target);
-        self.refresh_view_matrix();
-    }
-
-    pub fn roll(&mut self, degrees: f32) {
-        let rot = glm::rotation(degrees, &(self.target - self.pos).normalize());
-        self.top = rot.transform_vector(&self.top);
-        self.refresh_view_matrix();
-    }
-
-
     pub fn zoom(&mut self, ratio: f32) {
-        self.pos = glm::lerp(&self.pos, &self.target, ratio);
+        self.pos = glm::lerp(&self.pos, &self.center, ratio);
         self.refresh_view_matrix();
     }
 
     pub fn gimbal_ud(&mut self, degrees: f32) {
-        let dir = self.target - self.pos;
-        let dxt = dir.cross(&self.top);
+        let dxt = self.dir.cross(&self.top);
         let rot = glm::rotation(degrees, &dxt.normalize());
-        self.pos = rot.transform_vector(&(self.pos - self.target)) + self.target;
+        self.top = rot.transform_vector(&(self.top - self.center)) + self.center;
+        self.pos = rot.transform_vector(&(self.pos - self.center)) + self.center;
+        self.dir = rot.transform_vector(&(self.dir - self.center)) + self.center;
         self.refresh_view_matrix();
     }
 
     pub fn gimbal_lr(&mut self, degrees: f32) {
         let rot = glm::rotation(degrees, &self.top);
-        self.pos = rot.transform_vector(&(self.pos - self.target)) + self.target;
+        self.top = rot.transform_vector(&(self.top - self.center)) + self.center;
+        self.pos = rot.transform_vector(&(self.pos - self.center)) + self.center;
+        self.dir = rot.transform_vector(&(self.dir - self.center)) + self.center;
         self.refresh_view_matrix();
     }
 }
@@ -307,7 +288,7 @@ impl<T: Sized> Bindable for Uniform<T> {
 
 
 pub struct BasicRenderer {
-    pub camera: Uniform<BasicCamera>,
+    pub camera: Uniform<GimbalCamera>,
     pub project: Uniform<glm::Mat4>,
     uniform_group: wgpu::BindGroup,
     vertices: wgpu::Buffer,
@@ -322,7 +303,7 @@ impl BasicRenderer {
             size.width as f32, 
             size.height as f32, 
             1.0, 
-            10.0,
+            100.0,
         );
     }
 
@@ -383,7 +364,7 @@ impl BasicRenderer {
             bytes::of_slice(&index_data), BufferUsage::INDEX,
         );
 
-        let camera = Uniform::new(core.device, BasicCamera::new(
+        let camera = Uniform::new(core.device, GimbalCamera::new(
             glm::vec3(0.0,  0.0, -5.0),
             glm::vec3(0.0,  0.0,  0.0),
             glm::vec3(0.0, -1.0,  0.0),
@@ -398,7 +379,7 @@ impl BasicRenderer {
             bindings: &[
                 wgpu::BindGroupLayoutEntry::new(
                     0, wgpu::ShaderStage::VERTEX,
-                    Uniform::<BasicCamera>::bind_type(),
+                    Uniform::<GimbalCamera>::bind_type(),
                 ),
                 wgpu::BindGroupLayoutEntry::new(
                     1, wgpu::ShaderStage::VERTEX,
@@ -508,7 +489,7 @@ impl RenderStage for BasicStage<'_, '_> {
                     attachment: self.render_target,
                     resolve_target: None,
                     ops: Operations {
-                        load: LoadOp::Clear(Color::BLACK),
+                        load: LoadOp::Clear(Color { r: 0.2, g: 0.2, b: 0.2, a: 1.0 }),
                         store: true,
                     },
                 }

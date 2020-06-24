@@ -1,8 +1,7 @@
 
-
 use nalgebra_glm as glm;
 use winit::{
-    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent},
+    event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent, DeviceEvent},
     event_loop::{ControlFlow, EventLoop},
 };
 
@@ -44,6 +43,9 @@ fn main() -> ! {
     let mut last_frame_time = std::time::Instant::now();
     let mut last_frame_duration = std::time::Duration::new(0, 0);
 
+    let mut mouse_down = false;
+    let mut modifiers = winit::event::ModifiersState::empty();
+
     // mainloop
     event_loop.run(move |event, _, control_flow| {
 
@@ -52,6 +54,9 @@ fn main() -> ! {
             &window_state.window,
             &event,
         );
+
+        let imgui_wants_mouse = window_state.imgui.io().want_capture_mouse;
+        let imgui_wants_kbord = window_state.imgui.io().want_capture_keyboard;
         
         match &event {
             Event::NewEvents(_) => {
@@ -60,7 +65,31 @@ fn main() -> ! {
                 last_frame_duration = frame_dura;
             },
 
+            Event::DeviceEvent { event, .. } => match *event {
+                DeviceEvent::MouseMotion { delta } if mouse_down && !imgui_wants_mouse => {
+                    if modifiers.shift() {
+                        basic_renderer.camera.translate_rel(
+                            if modifiers.ctrl() { 
+                                glm::vec3(delta.0 as f32 / 100.0, 0.0, delta.1 as f32 / 100.0)
+                            } else {
+                                glm::vec3(delta.0 as f32 / 100.0, delta.1 as f32 / 100.0, 0.0)
+                            }
+                        );
+                    }
+                    else {
+                        basic_renderer.camera.gimbal_lr(delta.0 as f32 / 100.0);
+                        basic_renderer.camera.gimbal_ud(-delta.1 as f32 / 100.0);
+                    }
+                },
+
+                _ => (),
+            },
+
             Event::WindowEvent { event, .. } => match *event {
+
+                WindowEvent::ModifiersChanged(new_modifiers) =>
+                    modifiers = new_modifiers,
+
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     window_state.update_scale_factor(scale_factor);
                     imgui_renderer.build_font_texture(&mut renderer, &mut window_state.imgui);
@@ -75,18 +104,30 @@ fn main() -> ! {
                     eprintln!("resized: {:?}", new_size);
                 },
 
-                WindowEvent::KeyboardInput {
-                    input: KeyboardInput {
-                        virtual_keycode: Some(VirtualKeyCode::Escape),
-                        state: ElementState::Pressed,
-                        ..       
-                    },
-                    ..
-                }
-                | WindowEvent::CloseRequested => {
-                    *control_flow = ControlFlow::Exit;
+                WindowEvent::CloseRequested =>
+                    *control_flow = ControlFlow::Exit,
+
+                WindowEvent::MouseInput {
+                    state, button: winit::event::MouseButton::Left, ..
+                } if !imgui_wants_mouse => {
+                    mouse_down = match state {
+                        winit::event::ElementState::Pressed  => true,
+                        winit::event::ElementState::Released => false,
+                    };
                 }
 
+                WindowEvent::MouseWheel {
+                    phase: winit::event::TouchPhase::Moved,
+                    delta,
+                    ..
+                } if !imgui_wants_mouse => {
+                    match delta {
+                        winit::event::MouseScrollDelta::LineDelta(_, ud) =>
+                            basic_renderer.camera.zoom(ud / 25.0),
+                        winit::event::MouseScrollDelta::PixelDelta(winit::dpi::LogicalPosition { y: ud, .. }) =>
+                            basic_renderer.camera.zoom(ud as f32 / 100.0),
+                    }
+                }
 
                 WindowEvent::KeyboardInput {
                     input: KeyboardInput {
@@ -95,7 +136,7 @@ fn main() -> ! {
                         ..
                     },
                     ..
-                } => {
+                } if !imgui_wants_kbord => {
                     let ratio = last_frame_duration.as_secs_f32();
                     match k {
                         VirtualKeyCode::Left =>
@@ -110,6 +151,9 @@ fn main() -> ! {
                             basic_renderer.camera.zoom(0.5 * ratio),
                         VirtualKeyCode::Minus =>
                             basic_renderer.camera.zoom(-0.5 * ratio),
+
+                        VirtualKeyCode::Escape =>
+                            *control_flow = ControlFlow::Exit,
 
                         _ => (),
                     }
