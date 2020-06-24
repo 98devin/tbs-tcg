@@ -2,6 +2,7 @@
 use parking_lot::Mutex;
 use chashmap::CHashMap;
 
+use crate::render::cache;
 
 // This is probably enough...?
 const MAX_INCLUDE_DEPTH: usize = 5;
@@ -198,5 +199,22 @@ impl ShaderCache {
         });
 
         self.cache.get(name).unwrap()
+    }
+}
+
+
+impl<'a> cache::AssetCache<ShaderCacheEntry> for &'a ShaderCache {
+    type AssetRef = ShaderRef<'a>;
+    
+    fn load(self, name: &'static str) -> Self::AssetRef {
+        ShaderCache::load(self, name)
+    }
+
+    fn invalidate(self, name: &'static str) {
+        self.cache.remove(name);
+    }
+
+    fn clear(self) {
+        self.cache.clear();
     }
 }
