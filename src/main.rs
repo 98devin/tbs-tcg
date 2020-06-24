@@ -35,6 +35,8 @@ fn main() -> ! {
         &mut window_state.imgui
     );
 
+    eprintln!("initial size: {:?}", window_state.window.inner_size());
+    eprintln!("initial scale: {}", window_state.platform.hidpi_factor());
 
     let mut gui = gui::GuiComponentState::new();
 
