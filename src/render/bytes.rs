@@ -1,6 +1,7 @@
 
 
 pub unsafe trait IntoBytes: 'static {}
+pub unsafe trait FromBytes: IntoBytes {}
 
 pub fn of<T: IntoBytes>(t: &T) -> &[u8] {
     let data = t as *const _ as *const u8;
@@ -15,6 +16,20 @@ pub fn of_slice<T: IntoBytes>(ts: &[T]) -> &[u8] {
     let size = std::mem::size_of::<T>() * ts.len();
     unsafe {
         std::slice::from_raw_parts(data, size)
+    }
+}
+
+pub fn to<T: FromBytes>(b: &[u8]) -> &T {
+    assert_eq!(b.len(), std::mem::size_of::<T>());
+    unsafe { &*(b.as_ptr() as *const T) }
+}
+
+pub fn to_slice<T: FromBytes>(b: &[u8]) -> &[T] {
+    assert_eq!(b.len() % std::mem::size_of::<T>(), 0);
+    unsafe {
+        std::slice::from_raw_parts(
+            b.as_ptr() as *const T, b.len() / std::mem::size_of::<T>() 
+        )
     }
 }
 

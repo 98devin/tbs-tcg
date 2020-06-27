@@ -1,8 +1,6 @@
 
 use nalgebra_glm as glm;
 
-
-pub mod shade;
 pub mod window;
 pub mod gui;
 pub mod bytes;
@@ -18,16 +16,25 @@ pub trait RenderStage {
 }
 
 
+
+use cache::{
+    shaders::ShaderCache,
+    textures::TextureCache,
+    models::ModelCache,
+};
+
+
 pub struct RenderCore {
     pub device: &'static wgpu::Device,
-    pub queue: wgpu::Queue,
+    pub queue: &'static wgpu::Queue,
     
     surface: wgpu::Surface,
     pub sc_desc: wgpu::SwapChainDescriptor,
     pub swap_chain: wgpu::SwapChain,
 
-    pub shaders: shade::ShaderCache,
-
+    pub shaders: ShaderCache,
+    pub textures: TextureCache,
+    pub models: ModelCache,
 }
 
 
@@ -61,10 +68,11 @@ impl RenderCore {
         .await
         .expect("Failed to request wgpu Device/Queue.");
         
-        // WTF: We never need to deallocate this device during the program,
+        // WTF: We never need to deallocate these during the program,
         // so it's not a big deal if we leak the heap reference. If necessary,
         // a Drop implementation for RenderCore could also handle this.
         let device = Box::leak(Box::new(device));
+        let queue  = Box::leak(Box::new(queue));
 
         let size = window_state.window.inner_size();
         let sc_desc = wgpu::SwapChainDescriptor {
@@ -77,15 +85,21 @@ impl RenderCore {
 
         let swap_chain = device.create_swap_chain(&surface, &sc_desc);
 
-        let shaders = shade::ShaderCache::new(device);
+        let shaders = ShaderCache::new(device);
+        let textures = TextureCache::new(device, queue);
+        let models = ModelCache::new(device);
 
         RenderCore {
             device,
             queue,
-            shaders,
+
             surface,
             sc_desc,
             swap_chain,
+            
+            shaders,
+            textures,
+            models,
         }
     }
 
@@ -134,34 +148,6 @@ impl RenderSequence<'_> {
     }
 }
 
-
-
-#[repr(C)]
-#[derive(Clone, Copy)]
-struct BasicVertex {
-    position: glm::Vec3,
-    color:    glm::Vec3,
-}
-
-unsafe impl bytes::IntoBytes for BasicVertex {}
-
-impl Vertex for BasicVertex {
-    fn attributes() -> &'static [wgpu::VertexAttributeDescriptor] {
-        &wgpu::vertex_attr_array![
-            0 => Float3,
-            1 => Float3
-        ]
-    }
-
-    fn buffer_descriptor() -> wgpu::VertexBufferDescriptor<'static> {
-        use wgpu::*;
-        VertexBufferDescriptor {
-            stride: std::mem::size_of::<BasicVertex>() as _,
-            step_mode: InputStepMode::Vertex,
-            attributes: Self::attributes(),
-        }
-    }
-}
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
@@ -231,6 +217,10 @@ pub trait Bindable {
     fn bind(&self) -> wgpu::BindingResource;
 }
 
+
+
+
+
 pub struct Uniform<T> {
     buffer: wgpu::Buffer,
     data: T,
@@ -287,13 +277,18 @@ impl<T: Sized> Bindable for Uniform<T> {
 
 
 
+
 pub struct BasicRenderer {
+    device: &'static wgpu::Device,
+
     pub camera: Uniform<GimbalCamera>,
     pub project: Uniform<glm::Mat4>,
-    uniform_group: wgpu::BindGroup,
-    vertices: wgpu::Buffer,
-    indices: wgpu::Buffer,
-    pipeline: wgpu::RenderPipeline,
+    u_cam_group: wgpu::BindGroup,
+    u_tex_group: wgpu::BindGroup,
+    // vertices: wgpu::Buffer,
+    // indices: wgpu::Buffer,
+    pub pipeline: wgpu::RenderPipeline,
+    pub zbuffer: wgpu::Texture,
 }
 
 impl BasicRenderer {
@@ -305,64 +300,24 @@ impl BasicRenderer {
             1.0, 
             100.0,
         );
+
+        self.zbuffer = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("BasicRenderer depth buffer"),
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth24Plus,
+            mip_level_count: 1,
+            sample_count: 1,
+            usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT | wgpu::TextureUsage::SAMPLED,
+            size: wgpu::Extent3d {
+                width: size.width,
+                height: size.height,
+                depth: 1,
+            },
+        });
     }
 
     pub fn new(core: &mut RenderCore) -> Self {
         use wgpu::*;
-
-        let vertex_data = {
-            #[inline(always)]
-            fn v(p: glm::Vec3, c: glm::Vec3) -> BasicVertex {
-                BasicVertex { position: p, color: c }
-            }
-            [
-                // cube top 4 vertices
-                v(glm::vec3( 1.0,  1.0,  1.0), glm::vec3(1.0, 1.0, 1.0)),
-                v(glm::vec3(-1.0,  1.0,  1.0), glm::vec3(0.0, 1.0, 1.0)),
-                v(glm::vec3( 1.0,  1.0, -1.0), glm::vec3(1.0, 1.0, 0.0)),
-                v(glm::vec3(-1.0,  1.0, -1.0), glm::vec3(0.0, 1.0, 0.0)),
-                
-                // cube bottom 4 vertices
-                v(glm::vec3( 1.0, -1.0,  1.0), glm::vec3(1.0, 0.0, 1.0)),
-                v(glm::vec3(-1.0, -1.0,  1.0), glm::vec3(0.0, 0.0, 1.0)),
-                v(glm::vec3( 1.0, -1.0, -1.0), glm::vec3(1.0, 0.0, 0.0)),
-                v(glm::vec3(-1.0, -1.0, -1.0), glm::vec3(0.0, 0.0, 0.0)),
-            ]
-        };
-
-        let vertices = core.device.create_buffer_with_data(
-            bytes::of_slice(&vertex_data), BufferUsage::VERTEX,
-        );
-
-        let index_data: [u16; 6*2*3] = [
-            // cube top triangles
-            0, 1, 2,
-            1, 3, 2,
-            
-            // cube front triangles
-            0, 4, 1,
-            4, 5, 1,
-
-            // cube left triangles
-            0, 2, 6,
-            4, 0, 6,
-
-            // cube bottom triangles
-            4, 6, 5,
-            5, 6, 7,
-
-            // cube back triangles
-            2, 3, 6,
-            7, 6, 3,
-
-            // cube right triangles
-            1, 7, 3,
-            5, 7, 1,
-        ];
-
-        let indices = core.device.create_buffer_with_data(
-            bytes::of_slice(&index_data), BufferUsage::INDEX,
-        );
 
         let camera = Uniform::new(core.device, GimbalCamera::new(
             glm::vec3(0.0,  0.0, -5.0),
@@ -370,39 +325,77 @@ impl BasicRenderer {
             glm::vec3(0.0, -1.0,  0.0),
         ));
 
-        let project = Uniform::new(core.device,
-            glm::perspective_fov_lh_zo(100.0, core.sc_desc.width as f32, core.sc_desc.height as f32, 1.0, 10.0)
+        let project = Uniform::new(core.device, 
+            glm::perspective_fov_lh_zo(
+                120.0, 
+                core.sc_desc.width as f32, 
+                core.sc_desc.height as f32, 
+                1.0, 
+                100.0,
+            ),
         );
 
-        let uniform_descriptor = BindGroupLayoutDescriptor {
+        let zbuffer = core.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("BasicRenderer depth buffer"),
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth24Plus,
+            mip_level_count: 1,
+            sample_count: 1,
+            usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT | wgpu::TextureUsage::SAMPLED,
+            size: wgpu::Extent3d {
+                width: core.sc_desc.width,
+                height: core.sc_desc.height,
+                depth: 1,
+            },
+        });
+
+
+        let u_cam_descriptor = BindGroupLayoutDescriptor {
             label: Some("Camera uniform"),
             bindings: &[
-                wgpu::BindGroupLayoutEntry::new(
-                    0, wgpu::ShaderStage::VERTEX,
+                BindGroupLayoutEntry::new(
+                    0, ShaderStage::VERTEX,
                     Uniform::<GimbalCamera>::bind_type(),
                 ),
-                wgpu::BindGroupLayoutEntry::new(
-                    1, wgpu::ShaderStage::VERTEX,
+                BindGroupLayoutEntry::new(
+                    1, ShaderStage::VERTEX,
                     Uniform::<glm::Mat4>::bind_type(),
                 ),
             ],
         };
 
-        let uniform_layout = core.device.create_bind_group_layout(&uniform_descriptor);
+        let u_cam_layout = core.device.create_bind_group_layout(&u_cam_descriptor);
 
-        let uniform_bind_descriptor = wgpu::BindGroupDescriptor {
+        let u_cam_bind_desc = BindGroupDescriptor {
             label: Some("Camera uniform"),
-            layout: &uniform_layout,
+            layout: &u_cam_layout,
             bindings: &[
                 Binding { binding: 0, resource: camera.bind() },
                 Binding { binding: 1, resource: project.bind() },
             ],
         };
 
-        let uniform_group = core.device.create_bind_group(&uniform_bind_descriptor);
+        let u_cam_group = core.device.create_bind_group(&u_cam_bind_desc);
+
+        let tex = core.textures.load("gray_marble.tif");
+
+        let u_tex_group = core.device.create_bind_group(&BindGroupDescriptor {
+            label: Some("Texture uniform"),
+            layout: &tex.bind_layout,
+            bindings: &[
+                Binding {
+                    binding: 0,
+                    resource: BindingResource::TextureView(&tex.texture.create_default_view()),
+                },
+                Binding {
+                    binding: 1,
+                    resource: BindingResource::Sampler(&tex.sampler),
+                },
+            ],
+        });
 
         let layout_descriptor = PipelineLayoutDescriptor {
-            bind_group_layouts: &[&uniform_layout],
+            bind_group_layouts: &[&u_cam_layout, &tex.bind_layout],
         };
 
         let layout = core.device.create_pipeline_layout(&layout_descriptor);
@@ -417,15 +410,15 @@ impl BasicRenderer {
             fragment_stage: Some(frag_module.descriptor()),
             
             rasterization_state: Some(RasterizationStateDescriptor {
-                front_face: FrontFace::Ccw,
+                front_face: FrontFace::Cw,
                 cull_mode: CullMode::Back,
                 ..Default::default()
             }),
             
-            primitive_topology: wgpu::PrimitiveTopology::TriangleList,
+            primitive_topology: PrimitiveTopology::TriangleList,
             
             color_states: &[
-                wgpu::ColorStateDescriptor {
+                ColorStateDescriptor {
                     format: core.sc_desc.format,
                     color_blend: BlendDescriptor {
                         src_factor: BlendFactor::SrcAlpha,
@@ -441,12 +434,33 @@ impl BasicRenderer {
                 },
             ],
             
-            depth_stencil_state: None,
+            depth_stencil_state: Some(
+                wgpu::DepthStencilStateDescriptor {
+                    depth_compare: wgpu::CompareFunction::Less,
+                    depth_write_enabled: true,
+                    format: wgpu::TextureFormat::Depth24Plus,
+                    stencil_front: wgpu::StencilStateFaceDescriptor::IGNORE,
+                    stencil_back: wgpu::StencilStateFaceDescriptor::IGNORE,
+                    stencil_read_mask: 0,
+                    stencil_write_mask: 0,
+                }
+            ),
             
             vertex_state: VertexStateDescriptor {
-                index_format: IndexFormat::Uint16,
+                index_format: IndexFormat::Uint32,
                 vertex_buffers: &[
-                    BasicVertex::buffer_descriptor(),
+                    // positions
+                    VertexBufferDescriptor {
+                        attributes: &vertex_attr_array![0 => Float3],
+                        step_mode: InputStepMode::Vertex,
+                        stride: vertex_format_size!(Float3),
+                    }, 
+                    // texcoords
+                    VertexBufferDescriptor {
+                        attributes: &vertex_attr_array![1 => Float2],
+                        step_mode: InputStepMode::Vertex,
+                        stride: vertex_format_size!(Float2),
+                    },
                 ],
             },
             
@@ -458,12 +472,13 @@ impl BasicRenderer {
         let pipeline = core.device.create_render_pipeline(&render_descriptor);
 
         BasicRenderer {
+            device: core.device,
             camera,
             project,
-            uniform_group,
-            vertices,
-            indices,
+            u_cam_group,
+            u_tex_group,
             pipeline,
+            zbuffer,
         }
     }
 }
@@ -478,12 +493,19 @@ pub struct BasicStage<'r, 't> {
 impl RenderStage for BasicStage<'_, '_> {
     fn encode(self, core: &mut RenderCore, encoder: &mut wgpu::CommandEncoder) {
         use wgpu::*;
+        
+        let model = core.models.load(cache::models::ModelName {
+            file: "torus.obj",
+            name: "Torus", // FIXME: This is a _terrible_ name...
+        });
 
         self.basic_renderer.camera.refresh(core);
         self.basic_renderer.project.refresh(core);
 
-        let mut pass = encoder.begin_render_pass(&RenderPassDescriptor {
-            depth_stencil_attachment: None,
+
+        let zbuffer_view = self.basic_renderer.zbuffer.create_default_view();
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[
                 RenderPassColorAttachmentDescriptor {
                     attachment: self.render_target,
@@ -494,12 +516,26 @@ impl RenderStage for BasicStage<'_, '_> {
                     },
                 }
             ],
+            depth_stencil_attachment: Some(
+                wgpu::RenderPassDepthStencilAttachmentDescriptor {
+                    attachment: &zbuffer_view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: true,
+                    }),
+                    stencil_ops: None,
+                }
+            )
         });
 
         pass.set_pipeline(&self.basic_renderer.pipeline);
-        pass.set_bind_group(0, &self.basic_renderer.uniform_group, &[]);
-        pass.set_index_buffer(self.basic_renderer.indices.slice(..));
-        pass.set_vertex_buffer(0, self.basic_renderer.vertices.slice(..));
-        pass.draw_indexed(0..6*3*2, 0, 0..1);
+        pass.set_bind_group(0, &self.basic_renderer.u_cam_group, &[]);
+        pass.set_bind_group(1, &self.basic_renderer.u_tex_group, &[]);
+        
+        pass.set_index_buffer(model.indices.slice(..));
+        pass.set_vertex_buffer(0, model.positions.slice(..));
+        pass.set_vertex_buffer(1, model.texcoords.as_ref().unwrap().slice(..));
+
+        pass.draw_indexed(0..model.vertex_ct, 0, 0..1);
     }
 }

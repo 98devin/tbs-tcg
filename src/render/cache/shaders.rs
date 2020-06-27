@@ -1,8 +1,8 @@
 
-use parking_lot::Mutex;
-use chashmap::CHashMap;
+use crate::render::cache::AssetCache;
 
-use crate::render::cache;
+use chashmap::CHashMap;
+use parking_lot::Mutex;
 
 // This is probably enough...?
 const MAX_INCLUDE_DEPTH: usize = 5;
@@ -53,30 +53,6 @@ fn load_shader_file(name: &str, include_type: shaderc::IncludeType, containing_f
 }
 
 
-pub struct ShaderCacheEntry {
-    // origin_path: std::path::PathBuf,
-    // psd: wgpu::ProgrammableStageDescriptor<'static>,
-    module: wgpu::ShaderModule,
-}
-
-
-impl ShaderCacheEntry {
-    
-    pub fn module(&self) -> &wgpu::ShaderModule {
-        &self.module
-    }
-    
-    pub fn descriptor(&self) -> wgpu::ProgrammableStageDescriptor {
-        wgpu::ProgrammableStageDescriptor {
-            module: &self.module,
-            entry_point: "main",
-        }
-    }
-    
-}
-
-
-
 pub struct ShaderCache {
     device: &'static wgpu::Device,
 
@@ -100,7 +76,20 @@ pub struct ShaderCache {
     cache: CHashMap<&'static str, ShaderCacheEntry>,
 }
 
+pub struct ShaderCacheEntry {
+    // origin_path: std::path::PathBuf,
+    // psd: wgpu::ProgrammableStageDescriptor<'static>,
+    pub module: wgpu::ShaderModule,
+}
 
+impl ShaderCacheEntry {
+    pub fn descriptor(&self) -> wgpu::ProgrammableStageDescriptor {
+        wgpu::ProgrammableStageDescriptor {
+            module: &self.module,
+            entry_point: "main",
+        }
+    }
+}
 
 pub type ShaderRef<'a> = chashmap::ReadGuard<'a, &'static str, ShaderCacheEntry>;
 
@@ -138,8 +127,9 @@ impl ShaderCache {
     }
 
     pub fn load(&self, name: &'static str) -> ShaderRef {        
-        if self.cache.contains_key(name) {
-            return self.cache.get(name).unwrap()
+       
+        if let Some(shader) = self.cache.get(name) {
+            return shader;
         }
 
         let resolved_file = load_shader_file(name, shaderc::IncludeType::Standard, "", 0)
@@ -203,7 +193,8 @@ impl ShaderCache {
 }
 
 
-impl<'a> cache::AssetCache<ShaderCacheEntry> for &'a ShaderCache {
+impl<'a> AssetCache<ShaderCacheEntry> for &'a ShaderCache {
+    type AssetName = &'static str;
     type AssetRef = ShaderRef<'a>;
     
     fn load(self, name: &'static str) -> Self::AssetRef {
@@ -218,3 +209,4 @@ impl<'a> cache::AssetCache<ShaderCacheEntry> for &'a ShaderCache {
         self.cache.clear();
     }
 }
+
