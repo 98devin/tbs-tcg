@@ -70,7 +70,7 @@ impl ImguiRenderer {
   
     /// Create an entirely new imgui wgpu renderer.
     pub fn new(
-        core: &mut render::RenderCore,
+        core: &mut render::Core,
         format: TextureFormat,
         clear_color: Option<Color>,
     ) -> Self {
@@ -196,7 +196,7 @@ impl ImguiRenderer {
     pub fn render<'r>(
         &'r mut self,
         draw_data: &DrawData,
-        core: &mut render::RenderCore,
+        core: &mut render::Core,
         encoder: &'r mut CommandEncoder,
         view: &TextureView,
     ) {
@@ -329,7 +329,7 @@ impl ImguiRenderer {
     /// Updates the texture on the GPU corresponding to the current imgui font atlas.
     ///
     /// This has to be called after loading a font.
-    pub fn build_font_texture(&mut self, core: &mut render::RenderCore, imgui: &mut Context) {
+    pub fn build_font_texture(&mut self, core: &mut render::Core, imgui: &mut Context) {
         let mut atlas = imgui.fonts();
         let handle = atlas.build_rgba32_texture();
         let font_texture_id =
@@ -341,7 +341,7 @@ impl ImguiRenderer {
     /// Creates and uploads a new wgpu texture made from the imgui font atlas.
     pub fn upload_texture(
         &mut self,
-        core: &mut render::RenderCore,
+        core: &mut render::Core,
         data: &[u8],
         width: u32,
         height: u32,
@@ -403,8 +403,8 @@ pub struct ImguiStage<'r, W: gui::Widget> {
     pub render_target: &'r TextureView,
 }
 
-impl<W: gui::Widget> render::RenderStage for ImguiStage<'_, W> {
-    fn encode(self, core: &mut render::RenderCore, encoder: &mut CommandEncoder) {
+impl<W: gui::Widget> ImguiStage<'_, W> {
+    pub fn encode(self, core: &mut render::Core, encoder: &mut CommandEncoder) {
         
         let window::WindowState {
             ref mut imgui,

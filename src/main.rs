@@ -7,7 +7,6 @@ use winit::{
 
 pub mod render;
 
-use render::RenderCore;
 use render::window::WindowState;
 use render::gui;
 
@@ -18,11 +17,11 @@ fn main() -> ! {
 
     let mut window_state = WindowState::new(&event_loop);
     
-    let mut renderer = futures::executor::block_on(RenderCore::init(&mut window_state));
+    let mut renderer = futures::executor::block_on(render::Core::init(&mut window_state));
     
     let sc_format = renderer.sc_desc.format;
 
-    let mut basic_renderer = render::BasicRenderer::new(&mut renderer);
+    let mut basic_renderer = render::BasicPass::new(&mut renderer);
     let mut imgui_renderer = gui::imgui_wgpu::ImguiRenderer::new(
         &mut renderer,
         sc_format,
@@ -176,18 +175,21 @@ fn main() -> ! {
                     }
                 };
 
-                renderer.sequence()
-                    .draw(render::BasicStage {
-                        basic_renderer: &basic_renderer,
-                        render_target: &frame.view,
-                    })
-                    .draw(gui::imgui_wgpu::ImguiStage {
-                        window_state: &mut window_state,
-                        imgui_renderer: &mut imgui_renderer,
-                        widget: &mut gui,
-                        render_target: &frame.view,
-                    })
-                    .finish();
+                let mut encoder = renderer.device.create_command_encoder(&Default::default());
+
+                render::BasicStage {
+                    basic_renderer: &basic_renderer,
+                    render_target: &frame.view,
+                }.encode(&mut renderer, &mut encoder);
+
+                gui::imgui_wgpu::ImguiStage {
+                    window_state: &mut window_state,
+                    imgui_renderer: &mut imgui_renderer,
+                    widget: &mut gui,
+                    render_target: &frame.view,
+                }.encode(&mut renderer, &mut encoder);
+
+                renderer.queue.submit(std::iter::once(encoder.finish()));
 
             },
 

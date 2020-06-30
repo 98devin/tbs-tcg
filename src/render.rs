@@ -5,154 +5,171 @@ pub mod window;
 pub mod gui;
 pub mod bytes;
 pub mod cache;
+pub mod core;
 
-pub trait Vertex {
-    fn buffer_descriptor() -> wgpu::VertexBufferDescriptor<'static>;
-    fn attributes() -> &'static [wgpu::VertexAttributeDescriptor];
-}
-
-pub trait RenderStage {
-    fn encode(self, core: &mut RenderCore, encoder: &mut wgpu::CommandEncoder);
-}
-
-
-
-use cache::{
+pub use self::core::*;
+pub use self::cache::{
     shaders::ShaderCache,
     textures::TextureCache,
     models::ModelCache,
 };
 
 
-pub struct RenderCore {
-    pub device: &'static wgpu::Device,
-    pub queue: &'static wgpu::Queue,
+pub trait Resource {
+    /// information suitable for describing this resource's structure
+    type Descriptor; 
+
+    /// the data the resource represents
+    type Handle;
+}
+
+pub type Descriptor<R> = <R as Resource>::Descriptor;
+pub type Handle<R> = <R as Resource>::Handle;
+
+
+macro_rules! tuple_impls {
+    () => { };
+    ($t:ident, $($ts:ident,)*) => {
+        impl<'r, $t: Resource, $($ts: Resource,)*> Resource for &'r ($t, $($ts,)*) {
+            type Descriptor = &'r (Descriptor<$t>, $(Descriptor<$ts>,)*);
+            type Handle = &'r (Handle<$t>, $(Handle<$ts>,)*);
+        }
+        tuple_impls!($($ts,)*);
+    }
+}
+
+tuple_impls!(A, B, C, D, E, F,);
+
+
+/// A resource to use just to indicate an extra regular parameter is necessary.
+/// For example, `Core`, or `winit::dpi::PhysicalSize<u32>`.
+pub struct With<T>(std::marker::PhantomData<T>);
+
+impl<T> Resource for With<T> {
+    type Descriptor = T;
+    type Handle = T;
+}
+
+/// Equivalent to With<()>, but clearer in intent, perhaps.
+impl Resource for () {
+    type Descriptor = ();
+    type Handle = ();
+}
+
+impl<'r, R: Resource + 'r> Resource for &'r R {
+    type Descriptor = &'r Descriptor<R>;
+    type Handle = &'r Handle<R>;
+}
+
+impl<'r, R: Resource + 'r> Resource for &'r mut R {
+    type Descriptor = &'r mut Descriptor<R>;
+    type Handle = &'r mut Handle<R>;
+}
+
+
+pub trait Pass: Sized {
+    type Input:  Resource;
+    type Output: Resource;
     
-    surface: wgpu::Surface,
-    pub sc_desc: wgpu::SwapChainDescriptor,
-    pub swap_chain: wgpu::SwapChain,
+    fn construct(input: Descriptor<Input<Self>>) -> (Self, Descriptor<Output<Self>>);
+    fn perform(&mut self, input: Handle<Input<Self>>) -> Handle<Output<Self>>;
 
-    pub shaders: ShaderCache,
-    pub textures: TextureCache,
-    pub models: ModelCache,
+    /// Should be overridden if there is a more efficient way
+    /// to modify the pass only slightly.
+    fn refresh(self, input: Descriptor<Input<Self>>) -> (Self, Descriptor<Output<Self>>)
+    {
+        Self::construct(input)
+    }
 }
 
+pub type Input<P> = <P as Pass>::Input;
+pub type Output<P> = <P as Pass>::Output;
 
-impl RenderCore {
 
-    pub async fn init(window_state: &mut window::WindowState) -> Self {
 
-        let instance = wgpu::Instance::new(
-            wgpu::BackendBit::PRIMARY,
+pub struct Uniform<T> {
+    buffer: wgpu::Buffer,
+    data: T,
+}
+
+impl<T> std::ops::Deref for Uniform<T> {
+    type Target = T;
+    fn deref(&self) -> &Self::Target {
+        &self.data
+    }
+}
+
+impl<T> std::ops::DerefMut for Uniform<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.data
+    }
+}
+
+impl<T: Sized + bytes::IntoBytes> Uniform<T> {
+    pub fn new(device: &wgpu::Device, data: T) -> Self {
+        let buffer = device.create_buffer_with_data(
+            bytes::of(&data),
+            wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST
         );
 
-        let surface = unsafe { instance.create_surface(&window_state.window) };
-
-        let adapter = instance.request_adapter(
-            &wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::Default,
-                compatible_surface: Some(&surface),
-            },
-            wgpu::UnsafeExtensions::disallow(),
-        )
-        .await
-        .expect("Failed to request wgpu::Adapter.");
-
-        let adapter_info = adapter.get_info();
-        println!("{:?}", adapter_info);
-
-        let (device, queue) = adapter.request_device(
-            &Default::default(), 
-            None, // trace_path
-        )
-        .await
-        .expect("Failed to request wgpu Device/Queue.");
-        
-        // WTF: We never need to deallocate these during the program,
-        // so it's not a big deal if we leak the heap reference. If necessary,
-        // a Drop implementation for RenderCore could also handle this.
-        let device = Box::leak(Box::new(device));
-        let queue  = Box::leak(Box::new(queue));
-
-        let size = window_state.window.inner_size();
-        let sc_desc = wgpu::SwapChainDescriptor {
-            usage:  wgpu::TextureUsage::OUTPUT_ATTACHMENT,
-            format: wgpu::TextureFormat::Bgra8Unorm, // WTF: for wider compatibility?
-            width:  size.width  as u32,
-            height: size.height as u32,
-            present_mode: wgpu::PresentMode::Mailbox,
-        };
-
-        let swap_chain = device.create_swap_chain(&surface, &sc_desc);
-
-        let shaders = ShaderCache::new(device);
-        let textures = TextureCache::new(device, queue);
-        let models = ModelCache::new(device);
-
-        RenderCore {
-            device,
-            queue,
-
-            surface,
-            sc_desc,
-            swap_chain,
-            
-            shaders,
-            textures,
-            models,
+        Self {
+            buffer, data,
         }
     }
 
-    pub fn handle_window_resize(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-
-        self.sc_desc = wgpu::SwapChainDescriptor {
-            width:  size.width,
-            height: size.height,
-            ..self.sc_desc
-        };
-
-        self.swap_chain =
-            self.device.create_swap_chain(&self.surface, &self.sc_desc);
-    }
-
-    #[inline]
-    pub fn sequence(&mut self) -> RenderSequence {
-        let encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: None,
-        });
-
-        RenderSequence {
-            encoder,
-            renderer: self,
-        }
-    }
-}
-
-pub struct RenderSequence<'r> {
-    renderer: &'r mut RenderCore,
-    encoder: wgpu::CommandEncoder,
-}
-
-impl RenderSequence<'_> {
-    #[inline]
-    pub fn draw<R: RenderStage>(mut self, r: R) -> Self {
-        r.encode(&mut self.renderer, &mut self.encoder);
-        self
-    }
-
-    #[inline]
-    pub fn finish(self) {
-        self.renderer.queue.submit(
-            std::iter::once(self.encoder.finish())
+    fn refresh(&self, core: &Core) {
+        core.queue.write_buffer(
+            &self.buffer,
+            0 as wgpu::BufferAddress,
+            bytes::of(&self.data)
         );
     }
+
+    fn bind_type() -> wgpu::BindingType {
+        wgpu::BindingType::UniformBuffer {
+            dynamic: false,
+            min_binding_size: std::num::NonZeroU64::new(
+                std::mem::size_of::<T>() as u64
+            ),
+        }
+    }
+
+    fn bind(&self) -> wgpu::BindingResource {
+        wgpu::BindingResource::Buffer(self.buffer.slice(..))
+    }
+}
+
+
+impl<T: Sized + bytes::IntoBytes> Resource for Uniform<T> {
+    type Descriptor = wgpu::BindGroupLayout;
+    type Handle = wgpu::BindGroup;
+}
+
+impl Resource for wgpu::SwapChainFrame {
+    type Descriptor = wgpu::SwapChainDescriptor;
+    type Handle = wgpu::TextureView;
+}
+
+impl Resource for wgpu::Texture {
+    type Descriptor = wgpu::TextureDescriptor<'static>;
+    type Handle = wgpu::Texture;
+}
+
+impl Resource for wgpu::TextureView {
+    type Descriptor = wgpu::TextureViewDescriptor<'static>;
+    type Handle = wgpu::TextureView;
+}
+
+impl Resource for wgpu::Sampler {
+    type Descriptor = wgpu::SamplerDescriptor<'static>;
+    type Handle = wgpu::Sampler;
 }
 
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug)]
 pub struct GimbalCamera {
-    view: glm::Mat4,
+    view:   glm::Mat4,
     pos:    glm::Vec3,
     center: glm::Vec3,
     dir:    glm::Vec3,
@@ -211,87 +228,20 @@ impl GimbalCamera {
     }
 }
 
-    
-pub trait Bindable {
-    fn bind_type() -> wgpu::BindingType;
-    fn bind(&self) -> wgpu::BindingResource;
-}
 
 
-
-
-
-pub struct Uniform<T> {
-    buffer: wgpu::Buffer,
-    data: T,
-}
-
-impl<T> std::ops::Deref for Uniform<T> {
-    type Target = T;
-    fn deref(&self) -> &Self::Target {
-        &self.data
-    }
-}
-
-impl<T> std::ops::DerefMut for Uniform<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.data
-    }
-}
-
-impl<T: Sized + bytes::IntoBytes> Uniform<T> {
-    fn new(device: &wgpu::Device, data: T) -> Self {
-        let buffer = device.create_buffer_with_data(
-            bytes::of(&data),
-            wgpu::BufferUsage::UNIFORM | wgpu::BufferUsage::COPY_DST
-        );
-
-        Self {
-            buffer, data,
-        }
-    }
-
-    fn refresh(&self, core: &RenderCore) {
-        core.queue.write_buffer(
-            &self.buffer,
-            0 as wgpu::BufferAddress,
-            bytes::of(&self.data)
-        );
-    }
-}
-
-impl<T: Sized> Bindable for Uniform<T> {
-    fn bind_type() -> wgpu::BindingType {
-        wgpu::BindingType::UniformBuffer {
-            dynamic: false,
-            min_binding_size: std::num::NonZeroU64::new(
-                std::mem::size_of::<T>() as u64
-            ),
-        }
-    }
-
-    fn bind(&self) -> wgpu::BindingResource {
-        wgpu::BindingResource::Buffer(self.buffer.slice(..))
-    }
-}
-
-
-
-
-pub struct BasicRenderer {
+pub struct BasicPass {
     device: &'static wgpu::Device,
 
     pub camera: Uniform<GimbalCamera>,
     pub project: Uniform<glm::Mat4>,
     u_cam_group: wgpu::BindGroup,
     u_tex_group: wgpu::BindGroup,
-    // vertices: wgpu::Buffer,
-    // indices: wgpu::Buffer,
     pub pipeline: wgpu::RenderPipeline,
     pub zbuffer: wgpu::Texture,
 }
 
-impl BasicRenderer {
+impl BasicPass {
     pub fn adjust_screen_res(&mut self, size: winit::dpi::PhysicalSize<u32>) {
         *self.project = glm::perspective_fov_lh_zo(
             120.0, 
@@ -316,7 +266,7 @@ impl BasicRenderer {
         });
     }
 
-    pub fn new(core: &mut RenderCore) -> Self {
+    pub fn new(core: &mut Core) -> Self {
         use wgpu::*;
 
         let camera = Uniform::new(core.device, GimbalCamera::new(
@@ -354,11 +304,11 @@ impl BasicRenderer {
             label: Some("Camera uniform"),
             bindings: &[
                 BindGroupLayoutEntry::new(
-                    0, ShaderStage::VERTEX,
+                    0, wgpu::ShaderStage::all(),
                     Uniform::<GimbalCamera>::bind_type(),
                 ),
                 BindGroupLayoutEntry::new(
-                    1, ShaderStage::VERTEX,
+                    1, wgpu::ShaderStage::all(),
                     Uniform::<glm::Mat4>::bind_type(),
                 ),
             ],
@@ -461,6 +411,12 @@ impl BasicRenderer {
                         step_mode: InputStepMode::Vertex,
                         stride: vertex_format_size!(Float2),
                     },
+                    // normals
+                    VertexBufferDescriptor {
+                        attributes: &vertex_attr_array![2 => Float3],
+                        step_mode: InputStepMode::Vertex,
+                        stride: vertex_format_size!(Float3),
+                    },
                 ],
             },
             
@@ -471,7 +427,7 @@ impl BasicRenderer {
 
         let pipeline = core.device.create_render_pipeline(&render_descriptor);
 
-        BasicRenderer {
+        BasicPass {
             device: core.device,
             camera,
             project,
@@ -486,12 +442,12 @@ impl BasicRenderer {
 
 
 pub struct BasicStage<'r, 't> {
-    pub basic_renderer: &'r BasicRenderer,
+    pub basic_renderer: &'r BasicPass,
     pub render_target: &'t wgpu::TextureView,
 }
 
-impl RenderStage for BasicStage<'_, '_> {
-    fn encode(self, core: &mut RenderCore, encoder: &mut wgpu::CommandEncoder) {
+impl BasicStage<'_, '_> {
+    pub fn encode(self, core: &mut Core, encoder: &mut wgpu::CommandEncoder) {
         use wgpu::*;
         
         let model = core.models.load(cache::models::ModelName {
@@ -535,7 +491,94 @@ impl RenderStage for BasicStage<'_, '_> {
         pass.set_index_buffer(model.indices.slice(..));
         pass.set_vertex_buffer(0, model.positions.slice(..));
         pass.set_vertex_buffer(1, model.texcoords.as_ref().unwrap().slice(..));
+        pass.set_vertex_buffer(2, model.normals.as_ref().unwrap().slice(..));
 
         pass.draw_indexed(0..model.vertex_ct, 0, 0..1);
     }
+}
+
+
+
+pub struct PostRenderer {
+    pub pipeline: wgpu::RenderPipeline,
+}
+
+impl PostRenderer {
+
+    pub fn new(core: &mut Core) -> Self {
+        use wgpu::*;
+
+        let tex_layout = core.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("PostFX Input texture"),
+            bindings: &[
+                wgpu::BindGroupLayoutEntry::new(
+                    0, wgpu::ShaderStage::FRAGMENT,
+                    wgpu::BindingType::SampledTexture {
+                        dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                        component_type: wgpu::TextureComponentType::Float,
+                    },
+                ),
+                wgpu::BindGroupLayoutEntry::new(
+                    1, wgpu::ShaderStage::FRAGMENT,
+                    wgpu::BindingType::Sampler { comparison: false },
+                ),
+            ],
+        });
+
+        let layout = core.device.create_pipeline_layout(
+            &wgpu::PipelineLayoutDescriptor {
+                bind_group_layouts: &[&tex_layout],
+            },
+        );
+
+        let vert_module = core.shaders.load("post.vert");
+        let frag_module = core.shaders.load("post.frag");
+
+        let render_desc = wgpu::RenderPipelineDescriptor {
+            layout: &layout,
+            
+            vertex_stage: vert_module.descriptor(),
+            fragment_stage: Some(frag_module.descriptor()),
+            
+            rasterization_state: Some(Default::default()),
+            
+            primitive_topology: PrimitiveTopology::TriangleList,
+            
+            color_states: &[
+                ColorStateDescriptor {
+                    format: core.sc_desc.format,
+                    color_blend: BlendDescriptor {
+                        src_factor: BlendFactor::SrcAlpha,
+                        dst_factor: BlendFactor::OneMinusSrcAlpha,
+                        operation: BlendOperation::Add,
+                    },
+                    alpha_blend: BlendDescriptor {
+                        src_factor: BlendFactor::OneMinusDstAlpha,
+                        dst_factor: BlendFactor::One,
+                        operation: BlendOperation::Add,
+                    },
+                    write_mask: ColorWrite::ALL,
+                },
+            ],
+            
+            depth_stencil_state: None,
+
+            vertex_state: VertexStateDescriptor {
+                index_format: wgpu::IndexFormat::Uint16,
+                vertex_buffers: &[]
+            },
+            
+            sample_count: 1,
+            sample_mask: !0,
+            alpha_to_coverage_enabled: false,
+        };
+
+        let pipeline = core.device.create_render_pipeline(&render_desc);
+
+        Self {
+            pipeline,
+        }
+    }
+
 }
