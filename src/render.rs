@@ -3,9 +3,9 @@ use nalgebra_glm as glm;
 
 pub mod window;
 pub mod gui;
-pub mod bytes;
 pub mod cache;
 pub mod core;
+pub mod camera;
 
 pub use self::core::*;
 pub use self::cache::{
@@ -14,25 +14,27 @@ pub use self::cache::{
     models::ModelCache,
 };
 
+use crate::util::{self, bytes};
 
-pub trait Resource {
+
+pub trait Resource<'p> {
     /// information suitable for describing this resource's structure
-    type Descriptor; 
+    type Descriptor: 'p; 
 
     /// the data the resource represents
-    type Handle;
+    type Handle: 'p;
 }
 
-pub type Descriptor<R> = <R as Resource>::Descriptor;
-pub type Handle<R> = <R as Resource>::Handle;
+pub type Descriptor<'p, R> = <R as Resource<'p>>::Descriptor;
+pub type Handle<'p, R> = <R as Resource<'p>>::Handle;
 
 
 macro_rules! tuple_impls {
     () => { };
     ($t:ident, $($ts:ident,)*) => {
-        impl<'r, $t: Resource, $($ts: Resource,)*> Resource for &'r ($t, $($ts,)*) {
-            type Descriptor = &'r (Descriptor<$t>, $(Descriptor<$ts>,)*);
-            type Handle = &'r (Handle<$t>, $(Handle<$ts>,)*);
+        impl<'p, $t: Resource<'p>, $($ts: Resource<'p>,)*> Resource<'p> for ($t, $($ts,)*) {
+            type Descriptor = (Descriptor<'p, $t>, $(Descriptor<'p, $ts>,)*);
+            type Handle = (Handle<'p, $t>, $(Handle<'p, $ts>,)*);
         }
         tuple_impls!($($ts,)*);
     }
@@ -45,46 +47,64 @@ tuple_impls!(A, B, C, D, E, F,);
 /// For example, `Core`, or `winit::dpi::PhysicalSize<u32>`.
 pub struct With<T>(std::marker::PhantomData<T>);
 
-impl<T> Resource for With<T> {
+impl<'p, T: 'p> Resource<'p> for With<T> {
     type Descriptor = T;
     type Handle = T;
 }
 
 /// Equivalent to With<()>, but clearer in intent, perhaps.
-impl Resource for () {
+impl Resource<'_> for () {
     type Descriptor = ();
     type Handle = ();
 }
 
-impl<'r, R: Resource + 'r> Resource for &'r R {
-    type Descriptor = &'r Descriptor<R>;
-    type Handle = &'r Handle<R>;
+impl<'r, R: Resource<'r>> Resource<'r> for &'r R {
+    type Descriptor = &'r Descriptor<'r, R>;
+    type Handle = &'r Handle<'r, R>;
 }
 
-impl<'r, R: Resource + 'r> Resource for &'r mut R {
-    type Descriptor = &'r mut Descriptor<R>;
-    type Handle = &'r mut Handle<R>;
+impl<'r, R: Resource<'r>> Resource<'r> for &'r mut R {
+    type Descriptor = &'r mut Descriptor<'r, R>;
+    type Handle = &'r mut Handle<'r, R>;
+}
+
+pub struct Borrow<R>(std::marker::PhantomData<*const R>);
+
+impl<'r, R: Resource<'r>> Resource<'r> for Borrow<R> {
+    type Descriptor = util::Borrow<'r, Descriptor<'r, R>>;
+    type Handle = util::Borrow<'r, Handle<'r, R>>;
 }
 
 
-pub trait Pass: Sized {
-    type Input:  Resource;
-    type Output: Resource;
+
+pub trait Pass<'p>: Sized {
+    type Input:  Resource<'p>;
+    type Output: Resource<'p>;
+
+    type Config;
+    type Params;
     
-    fn construct(input: Descriptor<Input<Self>>) -> (Self, Descriptor<Output<Self>>);
-    fn perform(&mut self, input: Handle<Input<Self>>) -> Handle<Output<Self>>;
+    fn construct(config: Self::Config, input: InputDesc<'p, Self>) -> (Self, OutputDesc<'p, Self>);
+    fn perform(self: &'p mut Self, params: Self::Params, input: InputHandle<'p, Self>) -> OutputHandle<'p, Self>;
 
     /// Should be overridden if there is a more efficient way
     /// to modify the pass only slightly.
-    fn refresh(self, input: Descriptor<Input<Self>>) -> (Self, Descriptor<Output<Self>>)
+    fn refresh(self: &'p mut Self, config: Self::Config, input: InputDesc<'p, Self>) -> OutputDesc<'p, Self>
     {
-        Self::construct(input)
+        let (new_self, output) = Self::construct(config, input);
+        *self = new_self;
+        output
     }
 }
 
-pub type Input<P> = <P as Pass>::Input;
-pub type Output<P> = <P as Pass>::Output;
+pub type Input<'p, P> = <P as Pass<'p>>::Input;
+pub type Output<'p, P> = <P as Pass<'p>>::Output;
 
+pub type InputDesc<'p, P> = Descriptor<'p, Input<'p, P>>;
+pub type OutputDesc<'p, P> = Descriptor<'p, Output<'p, P>>;
+
+pub type InputHandle<'p, P> = Handle<'p, Input<'p, P>>;
+pub type OutputHandle<'p, P> = Handle<'p, Output<'p, P>>;
 
 
 pub struct Uniform<T> {
@@ -140,100 +160,75 @@ impl<T: Sized + bytes::IntoBytes> Uniform<T> {
 }
 
 
-impl<T: Sized + bytes::IntoBytes> Resource for Uniform<T> {
+impl<'p, T: Sized + bytes::IntoBytes> Resource<'p> for Uniform<T> {
     type Descriptor = wgpu::BindGroupLayout;
     type Handle = wgpu::BindGroup;
 }
 
-impl Resource for wgpu::SwapChainFrame {
+impl<'p> Resource<'p> for wgpu::SwapChainFrame {
     type Descriptor = wgpu::SwapChainDescriptor;
     type Handle = wgpu::TextureView;
 }
 
-impl Resource for wgpu::Texture {
-    type Descriptor = wgpu::TextureDescriptor<'static>;
+impl<'p> Resource<'p> for wgpu::Texture {
+    type Descriptor = wgpu::TextureDescriptor<'p>;
     type Handle = wgpu::Texture;
 }
 
-impl Resource for wgpu::TextureView {
-    type Descriptor = wgpu::TextureViewDescriptor<'static>;
+impl<'p> Resource<'p> for wgpu::TextureView {
+    type Descriptor = wgpu::TextureDescriptor<'p>;
     type Handle = wgpu::TextureView;
 }
 
-impl Resource for wgpu::Sampler {
-    type Descriptor = wgpu::SamplerDescriptor<'static>;
+impl<'p> Resource<'p> for wgpu::Sampler {
+    type Descriptor = wgpu::SamplerDescriptor<'p>;
     type Handle = wgpu::Sampler;
 }
 
 
-#[repr(C)]
-#[derive(Copy, Clone, Debug)]
-pub struct GimbalCamera {
-    view:   glm::Mat4,
-    pos:    glm::Vec3,
-    center: glm::Vec3,
-    dir:    glm::Vec3,
-    top:    glm::Vec3,
+pub struct AnyAttachment;
+
+pub enum AnyAttachmentDescriptor<'p> {
+    TextureView(&'p wgpu::TextureDescriptor<'p>),
+    SwapChain(&'p wgpu::SwapChainDescriptor),
 }
 
-unsafe impl bytes::IntoBytes for GimbalCamera {}
-
-impl GimbalCamera {
-    pub fn new(pos: glm::Vec3, center: glm::Vec3, top: glm::Vec3) -> Self {
-        let dir = (center - pos).normalize();
-        GimbalCamera {
-            view: glm::look_at_lh(&pos, &center, &top),
-            pos, center, dir, top,
+impl AnyAttachmentDescriptor<'_> {
+    #[inline]
+    pub fn width(&self) -> u32 {
+        match self {
+            AnyAttachmentDescriptor::TextureView(tview) => tview.size.width,
+            AnyAttachmentDescriptor::SwapChain(schain) => schain.width,
         }
     }
 
-    fn refresh_view_matrix(&mut self) {
-        self.view = glm::look_at_lh(&self.pos, &(self.pos + self.dir), &self.top);
+    #[inline]
+    pub fn height(&self) -> u32 {
+        match self {
+            AnyAttachmentDescriptor::TextureView(tview) => tview.size.height,
+            AnyAttachmentDescriptor::SwapChain(schain) => schain.height,
+        }
     }
 
-    pub fn translate(&mut self, dpos: glm::Vec3) {
-        self.pos += dpos;
-        self.refresh_view_matrix();
+    #[inline]
+    pub fn format(&self) -> wgpu::TextureFormat {
+        match self {
+            AnyAttachmentDescriptor::TextureView(tview) => tview.format,
+            AnyAttachmentDescriptor::SwapChain(schain) => schain.format,
+        }
     }
+}
 
-    pub fn translate_rel(&mut self, drel: glm::Vec3) {
-        let dxt = self.dir.cross(&self.top);
-        self.translate(
-            drel.x * dxt +
-            drel.y * self.top +
-            drel.z * self.dir
-        );
-    }
 
-    pub fn zoom(&mut self, ratio: f32) {
-        self.pos = glm::lerp(&self.pos, &self.center, ratio);
-        self.refresh_view_matrix();
-    }
-
-    pub fn gimbal_ud(&mut self, degrees: f32) {
-        let dxt = self.dir.cross(&self.top);
-        let rot = glm::rotation(degrees, &dxt.normalize());
-        self.top = rot.transform_vector(&(self.top - self.center)) + self.center;
-        self.pos = rot.transform_vector(&(self.pos - self.center)) + self.center;
-        self.dir = rot.transform_vector(&(self.dir - self.center)) + self.center;
-        self.refresh_view_matrix();
-    }
-
-    pub fn gimbal_lr(&mut self, degrees: f32) {
-        let rot = glm::rotation(degrees, &self.top);
-        self.top = rot.transform_vector(&(self.top - self.center)) + self.center;
-        self.pos = rot.transform_vector(&(self.pos - self.center)) + self.center;
-        self.dir = rot.transform_vector(&(self.dir - self.center)) + self.center;
-        self.refresh_view_matrix();
-    }
+impl<'p> Resource<'p> for AnyAttachment {
+    type Descriptor = AnyAttachmentDescriptor<'p>;
+    type Handle = &'p wgpu::TextureView;
 }
 
 
 
 pub struct BasicPass {
-    device: &'static wgpu::Device,
-
-    pub camera: Uniform<GimbalCamera>,
+    pub camera: Uniform<camera::GimbalCamera>,
     pub project: Uniform<glm::Mat4>,
     u_cam_group: wgpu::BindGroup,
     u_tex_group: wgpu::BindGroup,
@@ -241,35 +236,26 @@ pub struct BasicPass {
     pub zbuffer: wgpu::Texture,
 }
 
-impl BasicPass {
-    pub fn adjust_screen_res(&mut self, size: winit::dpi::PhysicalSize<u32>) {
-        *self.project = glm::perspective_fov_lh_zo(
-            120.0, 
-            size.width as f32, 
-            size.height as f32, 
-            1.0, 
-            100.0,
+impl<'p> Pass<'p> for BasicPass {
+    
+    type Input =
+        ( With<&'p Core>
+        , AnyAttachment // color attachment
         );
+    
+    type Output =
+        Borrow<wgpu::Texture>; // depth buffer
 
-        self.zbuffer = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("BasicRenderer depth buffer"),
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Depth24Plus,
-            mip_level_count: 1,
-            sample_count: 1,
-            usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT | wgpu::TextureUsage::SAMPLED,
-            size: wgpu::Extent3d {
-                width: size.width,
-                height: size.height,
-                depth: 1,
-            },
-        });
-    }
+    type Params =
+        ();
 
-    pub fn new(core: &mut Core) -> Self {
-        use wgpu::*;
+    type Config =
+        ();
 
-        let camera = Uniform::new(core.device, GimbalCamera::new(
+    fn construct(_: (), input: InputDesc<'p, Self>) -> (Self, OutputDesc<'p, Self>) {
+        let (core, target) = input;
+
+        let camera = Uniform::new(core.device, camera::GimbalCamera::new(
             glm::vec3(0.0,  0.0, -5.0),
             glm::vec3(0.0,  0.0,  0.0),
             glm::vec3(0.0, -1.0,  0.0),
@@ -278,14 +264,14 @@ impl BasicPass {
         let project = Uniform::new(core.device, 
             glm::perspective_fov_lh_zo(
                 120.0, 
-                core.sc_desc.width as f32, 
-                core.sc_desc.height as f32, 
+                target.width() as f32, 
+                target.height() as f32, 
                 1.0, 
                 100.0,
             ),
         );
 
-        let zbuffer = core.device.create_texture(&wgpu::TextureDescriptor {
+        let zbuffer_desc = wgpu::TextureDescriptor {
             label: Some("BasicRenderer depth buffer"),
             dimension: wgpu::TextureDimension::D2,
             format: wgpu::TextureFormat::Depth24Plus,
@@ -293,21 +279,22 @@ impl BasicPass {
             sample_count: 1,
             usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT | wgpu::TextureUsage::SAMPLED,
             size: wgpu::Extent3d {
-                width: core.sc_desc.width,
-                height: core.sc_desc.height,
+                width: target.width(),
+                height: target.height(),
                 depth: 1,
             },
-        });
+        };
 
+        let zbuffer = core.device.create_texture(&zbuffer_desc);
 
-        let u_cam_descriptor = BindGroupLayoutDescriptor {
+        let u_cam_descriptor = wgpu::BindGroupLayoutDescriptor {
             label: Some("Camera uniform"),
             bindings: &[
-                BindGroupLayoutEntry::new(
+                wgpu::BindGroupLayoutEntry::new(
                     0, wgpu::ShaderStage::all(),
-                    Uniform::<GimbalCamera>::bind_type(),
+                    Uniform::<camera::GimbalCamera>::bind_type(),
                 ),
-                BindGroupLayoutEntry::new(
+                wgpu::BindGroupLayoutEntry::new(
                     1, wgpu::ShaderStage::all(),
                     Uniform::<glm::Mat4>::bind_type(),
                 ),
@@ -316,12 +303,12 @@ impl BasicPass {
 
         let u_cam_layout = core.device.create_bind_group_layout(&u_cam_descriptor);
 
-        let u_cam_bind_desc = BindGroupDescriptor {
+        let u_cam_bind_desc = wgpu::BindGroupDescriptor {
             label: Some("Camera uniform"),
             layout: &u_cam_layout,
             bindings: &[
-                Binding { binding: 0, resource: camera.bind() },
-                Binding { binding: 1, resource: project.bind() },
+                wgpu::Binding { binding: 0, resource: camera.bind() },
+                wgpu::Binding { binding: 1, resource: project.bind() },
             ],
         };
 
@@ -329,22 +316,22 @@ impl BasicPass {
 
         let tex = core.textures.load("gray_marble.tif");
 
-        let u_tex_group = core.device.create_bind_group(&BindGroupDescriptor {
+        let u_tex_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Texture uniform"),
             layout: &tex.bind_layout,
             bindings: &[
-                Binding {
+                wgpu::Binding {
                     binding: 0,
-                    resource: BindingResource::TextureView(&tex.texture.create_default_view()),
+                    resource: wgpu::BindingResource::TextureView(&tex.texture.create_default_view()),
                 },
-                Binding {
+                wgpu::Binding {
                     binding: 1,
-                    resource: BindingResource::Sampler(&tex.sampler),
+                    resource: wgpu::BindingResource::Sampler(&tex.sampler),
                 },
             ],
         });
 
-        let layout_descriptor = PipelineLayoutDescriptor {
+        let layout_descriptor = wgpu::PipelineLayoutDescriptor {
             bind_group_layouts: &[&u_cam_layout, &tex.bind_layout],
         };
 
@@ -353,34 +340,34 @@ impl BasicPass {
         let vert_module = core.shaders.load("basic.vert");
         let frag_module = core.shaders.load("basic.frag");
 
-        let render_descriptor = RenderPipelineDescriptor {
+        let render_descriptor = wgpu::RenderPipelineDescriptor {
             layout: &layout,
             
             vertex_stage: vert_module.descriptor(),
             fragment_stage: Some(frag_module.descriptor()),
             
-            rasterization_state: Some(RasterizationStateDescriptor {
-                front_face: FrontFace::Cw,
-                cull_mode: CullMode::Back,
+            rasterization_state: Some(wgpu::RasterizationStateDescriptor {
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: wgpu::CullMode::Back,
                 ..Default::default()
             }),
             
-            primitive_topology: PrimitiveTopology::TriangleList,
+            primitive_topology: wgpu::PrimitiveTopology::TriangleList,
             
             color_states: &[
-                ColorStateDescriptor {
-                    format: core.sc_desc.format,
-                    color_blend: BlendDescriptor {
-                        src_factor: BlendFactor::SrcAlpha,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
+                wgpu::ColorStateDescriptor {
+                    format: target.format(),
+                    color_blend: wgpu::BlendDescriptor {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
                     },
-                    alpha_blend: BlendDescriptor {
-                        src_factor: BlendFactor::OneMinusDstAlpha,
-                        dst_factor: BlendFactor::One,
-                        operation: BlendOperation::Add,
+                    alpha_blend: wgpu::BlendDescriptor {
+                        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
                     },
-                    write_mask: ColorWrite::ALL,
+                    write_mask: wgpu::ColorWrite::ALL,
                 },
             ],
             
@@ -396,26 +383,26 @@ impl BasicPass {
                 }
             ),
             
-            vertex_state: VertexStateDescriptor {
-                index_format: IndexFormat::Uint32,
+            vertex_state: wgpu::VertexStateDescriptor {
+                index_format: wgpu::IndexFormat::Uint32,
                 vertex_buffers: &[
                     // positions
-                    VertexBufferDescriptor {
-                        attributes: &vertex_attr_array![0 => Float3],
-                        step_mode: InputStepMode::Vertex,
-                        stride: vertex_format_size!(Float3),
+                    wgpu::VertexBufferDescriptor {
+                        attributes: &wgpu::vertex_attr_array![0 => Float3],
+                        step_mode: wgpu::InputStepMode::Vertex,
+                        stride: wgpu::vertex_format_size!(Float3),
                     }, 
                     // texcoords
-                    VertexBufferDescriptor {
-                        attributes: &vertex_attr_array![1 => Float2],
-                        step_mode: InputStepMode::Vertex,
-                        stride: vertex_format_size!(Float2),
+                    wgpu::VertexBufferDescriptor {
+                        attributes: &wgpu::vertex_attr_array![1 => Float2],
+                        step_mode: wgpu::InputStepMode::Vertex,
+                        stride: wgpu::vertex_format_size!(Float2),
                     },
                     // normals
-                    VertexBufferDescriptor {
-                        attributes: &vertex_attr_array![2 => Float3],
-                        step_mode: InputStepMode::Vertex,
-                        stride: vertex_format_size!(Float3),
+                    wgpu::VertexBufferDescriptor {
+                        attributes: &wgpu::vertex_attr_array![2 => Float3],
+                        step_mode: wgpu::InputStepMode::Vertex,
+                        stride: wgpu::vertex_format_size!(Float3),
                     },
                 ],
             },
@@ -427,47 +414,46 @@ impl BasicPass {
 
         let pipeline = core.device.create_render_pipeline(&render_descriptor);
 
-        BasicPass {
-            device: core.device,
+        let pass = Self {
             camera,
             project,
             u_cam_group,
             u_tex_group,
             pipeline,
             zbuffer,
-        }
+        };
+
+        (pass, zbuffer_desc.into())
     }
-}
 
 
+    fn perform(self: &'p mut Self, _: (), input: InputHandle<'p, Self>) -> OutputHandle<'p, Self> {
+        let (core, target) = input;
 
-pub struct BasicStage<'r, 't> {
-    pub basic_renderer: &'r BasicPass,
-    pub render_target: &'t wgpu::TextureView,
-}
-
-impl BasicStage<'_, '_> {
-    pub fn encode(self, core: &mut Core, encoder: &mut wgpu::CommandEncoder) {
-        use wgpu::*;
-        
         let model = core.models.load(cache::models::ModelName {
             file: "torus.obj",
             name: "Torus", // FIXME: This is a _terrible_ name...
         });
 
-        self.basic_renderer.camera.refresh(core);
-        self.basic_renderer.project.refresh(core);
+        self.camera.refresh(core);
+        self.project.refresh(core);
 
 
-        let zbuffer_view = self.basic_renderer.zbuffer.create_default_view();
+        let zbuffer_view = self.zbuffer.create_default_view();
+
+        let mut encoder = core.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Basic Pass"),
+        });
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             color_attachments: &[
-                RenderPassColorAttachmentDescriptor {
-                    attachment: self.render_target,
+                wgpu::RenderPassColorAttachmentDescriptor {
+                    attachment: target,
                     resolve_target: None,
-                    ops: Operations {
-                        load: LoadOp::Clear(Color { r: 0.2, g: 0.2, b: 0.2, a: 1.0 }),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(
+                            wgpu::Color { r: 0.2, g: 0.2, b: 0.2, a: 1.0 }
+                        ),
                         store: true,
                     },
                 }
@@ -484,9 +470,9 @@ impl BasicStage<'_, '_> {
             )
         });
 
-        pass.set_pipeline(&self.basic_renderer.pipeline);
-        pass.set_bind_group(0, &self.basic_renderer.u_cam_group, &[]);
-        pass.set_bind_group(1, &self.basic_renderer.u_tex_group, &[]);
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.u_cam_group, &[]);
+        pass.set_bind_group(1, &self.u_tex_group, &[]);
         
         pass.set_index_buffer(model.indices.slice(..));
         pass.set_vertex_buffer(0, model.positions.slice(..));
@@ -494,22 +480,69 @@ impl BasicStage<'_, '_> {
         pass.set_vertex_buffer(2, model.normals.as_ref().unwrap().slice(..));
 
         pass.draw_indexed(0..model.vertex_ct, 0, 0..1);
+
+        drop(pass); // end borrow
+
+        core.queue.submit(std::iter::once(
+            encoder.finish()
+        ));
+
+        (&self.zbuffer).into()
     }
 }
 
 
 
-pub struct PostRenderer {
-    pub pipeline: wgpu::RenderPipeline,
+pub struct PostPass {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
 }
 
-impl PostRenderer {
+impl<'p> Pass<'p> for PostPass {
 
-    pub fn new(core: &mut Core) -> Self {
-        use wgpu::*;
+    type Input = (With<&'p Core>, &'p wgpu::SwapChainFrame);
+    type Output = ();
+
+    type Config = util::Borrow<'p, wgpu::Texture>;
+    type Params = ();
+
+    fn perform(self: &'p mut Self, _: (), input: InputHandle<'p, Self>) -> OutputHandle<'p, Self> {
+        let (core, target) = input;
+
+        let mut encoder = core.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Postpass"),
+        });
+
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            depth_stencil_attachment: None,
+            color_attachments: &[
+                wgpu::RenderPassColorAttachmentDescriptor {
+                    attachment: target,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: true,
+                    },
+                },
+            ],
+        });
+
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.draw(0..3, 0..1);
+
+        drop(pass); // end borrow
+
+        core.queue.submit(std::iter::once(
+            encoder.finish()
+        ));
+    }
+    
+    fn construct(texture: Self::Config, input: InputDesc<'p, Self>) -> (Self, OutputDesc<'p, Self>) {
+        let (core, schain) = input;
 
         let tex_layout = core.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("PostFX Input texture"),
+            label: Some("Postpass input texture"),
             bindings: &[
                 wgpu::BindGroupLayoutEntry::new(
                     0, wgpu::ShaderStage::FRAGMENT,
@@ -525,6 +558,32 @@ impl PostRenderer {
                 ),
             ],
         });
+
+        let sample_desc = wgpu::SamplerDescriptor {
+            label: Some("Postpass sampler"),  
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: None,
+            ..Default::default()
+        };
+
+        let sampler = core.device.create_sampler(&sample_desc);
+
+        let bind_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Postpass bind group"),
+            layout: &tex_layout,
+            bindings: &[
+                wgpu::Binding {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&texture.create_default_view()),
+                },
+                wgpu::Binding {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                }
+            ],
+        });
+
 
         let layout = core.device.create_pipeline_layout(
             &wgpu::PipelineLayoutDescriptor {
@@ -543,28 +602,28 @@ impl PostRenderer {
             
             rasterization_state: Some(Default::default()),
             
-            primitive_topology: PrimitiveTopology::TriangleList,
+            primitive_topology: wgpu::PrimitiveTopology::TriangleList,
             
             color_states: &[
-                ColorStateDescriptor {
-                    format: core.sc_desc.format,
-                    color_blend: BlendDescriptor {
-                        src_factor: BlendFactor::SrcAlpha,
-                        dst_factor: BlendFactor::OneMinusSrcAlpha,
-                        operation: BlendOperation::Add,
+                wgpu::ColorStateDescriptor {
+                    format: schain.format,
+                    color_blend: wgpu::BlendDescriptor {
+                        src_factor: wgpu::BlendFactor::SrcAlpha,
+                        dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                        operation: wgpu::BlendOperation::Add,
                     },
-                    alpha_blend: BlendDescriptor {
-                        src_factor: BlendFactor::OneMinusDstAlpha,
-                        dst_factor: BlendFactor::One,
-                        operation: BlendOperation::Add,
+                    alpha_blend: wgpu::BlendDescriptor {
+                        src_factor: wgpu::BlendFactor::OneMinusDstAlpha,
+                        dst_factor: wgpu::BlendFactor::One,
+                        operation: wgpu::BlendOperation::Add,
                     },
-                    write_mask: ColorWrite::ALL,
+                    write_mask: wgpu::ColorWrite::ALL,
                 },
             ],
             
             depth_stencil_state: None,
 
-            vertex_state: VertexStateDescriptor {
+            vertex_state: wgpu::VertexStateDescriptor {
                 index_format: wgpu::IndexFormat::Uint16,
                 vertex_buffers: &[]
             },
@@ -576,9 +635,12 @@ impl PostRenderer {
 
         let pipeline = core.device.create_render_pipeline(&render_desc);
 
-        Self {
+        let pass = Self {
             pipeline,
-        }
+            bind_group,
+        };
+
+        (pass, ())
     }
 
 }

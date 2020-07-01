@@ -6,7 +6,10 @@ use winit::{
 };
 
 pub mod render;
+pub mod util;
 
+
+use render::{Pass, AnyAttachmentDescriptor::*};
 use render::window::WindowState;
 use render::gui;
 
@@ -19,19 +22,18 @@ fn main() -> ! {
     
     let mut renderer = futures::executor::block_on(render::Core::init(&mut window_state));
     
-    let sc_format = renderer.sc_desc.format;
+    let (mut basic_pass, _) = 
+        render::BasicPass::construct((), (
+            &renderer, 
+            SwapChain(&renderer.sc_desc),
+        ));
 
-    let mut basic_renderer = render::BasicPass::new(&mut renderer);
-    let mut imgui_renderer = gui::imgui_wgpu::ImguiRenderer::new(
-        &mut renderer,
-        sc_format,
-        None,
-    );
-
-    imgui_renderer.build_font_texture(
-        &mut renderer,
-        &mut window_state.imgui
-    );
+    let (mut imgui_pass, _) =
+        gui::imgui_wgpu::ImguiPass::construct(None, (
+            &renderer,
+            &mut window_state,
+            SwapChain(&renderer.sc_desc),
+        ));
 
 
     let mut gui = gui::GuiComponentState::new();
@@ -67,7 +69,7 @@ fn main() -> ! {
             Event::DeviceEvent { event, .. } => match *event {
                 DeviceEvent::MouseMotion { delta } if mouse_down && !imgui_wants_mouse => {
                     if modifiers.shift() {
-                        basic_renderer.camera.translate_rel(
+                        basic_pass.camera.translate_rel(
                             if modifiers.ctrl() { 
                                 glm::vec3(delta.0 as f32 / 100.0, 0.0, delta.1 as f32 / 100.0)
                             } else {
@@ -76,8 +78,8 @@ fn main() -> ! {
                         );
                     }
                     else {
-                        basic_renderer.camera.gimbal_lr(delta.0 as f32 / 100.0);
-                        basic_renderer.camera.gimbal_ud(-delta.1 as f32 / 100.0);
+                        basic_pass.camera.gimbal_lr(delta.0 as f32 / 100.0);
+                        basic_pass.camera.gimbal_ud(-delta.1 as f32 / 100.0);
                     }
                 },
 
@@ -91,7 +93,7 @@ fn main() -> ! {
 
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     window_state.update_scale_factor(scale_factor);
-                    imgui_renderer.build_font_texture(&mut renderer, &mut window_state.imgui);
+                    imgui_pass.build_font_texture(&mut renderer, &mut window_state.imgui);
                 },
 
                 WindowEvent::Resized(new_size) => {
@@ -99,7 +101,18 @@ fn main() -> ! {
                     // Fortunately it also appears to be unnecessary...
                     // window.set_inner_size(new_size); 
                     renderer.handle_window_resize(new_size);
-                    basic_renderer.adjust_screen_res(new_size);
+
+                    let _ = basic_pass.refresh((), (
+                        &renderer,
+                        SwapChain(&renderer.sc_desc),
+                    ));
+
+                    let _ = imgui_pass.refresh(None, (
+                        &renderer,
+                        &mut window_state,
+                        SwapChain(&renderer.sc_desc),
+                    ));
+
                     eprintln!("resized: {:?}", new_size);
                 },
 
@@ -122,9 +135,9 @@ fn main() -> ! {
                 } if !imgui_wants_mouse => {
                     match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, ud) =>
-                            basic_renderer.camera.zoom(ud / 25.0),
+                            basic_pass.camera.zoom(ud / 25.0),
                         winit::event::MouseScrollDelta::PixelDelta(winit::dpi::LogicalPosition { y: ud, .. }) =>
-                            basic_renderer.camera.zoom(ud as f32 / 100.0),
+                            basic_pass.camera.zoom(ud as f32 / 100.0),
                     }
                 }
 
@@ -139,17 +152,17 @@ fn main() -> ! {
                     let ratio = last_frame_duration.as_secs_f32();
                     match k {
                         VirtualKeyCode::Left =>
-                            basic_renderer.camera.gimbal_lr(-10.0 * ratio),
+                            basic_pass.camera.gimbal_lr(-10.0 * ratio),
                         VirtualKeyCode::Right =>
-                            basic_renderer.camera.gimbal_lr(10.0 * ratio),
+                            basic_pass.camera.gimbal_lr(10.0 * ratio),
                         VirtualKeyCode::Up =>
-                            basic_renderer.camera.gimbal_ud(-10.0 * ratio),
+                            basic_pass.camera.gimbal_ud(-10.0 * ratio),
                         VirtualKeyCode::Down =>
-                            basic_renderer.camera.gimbal_ud(10.0 * ratio),
+                            basic_pass.camera.gimbal_ud(10.0 * ratio),
                         VirtualKeyCode::Equals =>
-                            basic_renderer.camera.zoom(0.5 * ratio),
+                            basic_pass.camera.zoom(0.5 * ratio),
                         VirtualKeyCode::Minus =>
-                            basic_renderer.camera.zoom(-0.5 * ratio),
+                            basic_pass.camera.zoom(-0.5 * ratio),
 
                         VirtualKeyCode::Escape =>
                             *control_flow = ControlFlow::Exit,
@@ -168,28 +181,23 @@ fn main() -> ! {
             Event::RedrawRequested(_) => {
 
                 let frame = match renderer.swap_chain.get_next_frame() {
-                    Ok(frame) => frame.output,
+                    Ok(frame) => frame,
                     Err(_) => {
                         eprintln!("Dropped frame!");
                         return;
                     }
                 };
 
-                let mut encoder = renderer.device.create_command_encoder(&Default::default());
+                let _ = basic_pass.perform((), (
+                    &renderer,
+                    &frame.output.view,
+                ));
 
-                render::BasicStage {
-                    basic_renderer: &basic_renderer,
-                    render_target: &frame.view,
-                }.encode(&mut renderer, &mut encoder);
-
-                gui::imgui_wgpu::ImguiStage {
-                    window_state: &mut window_state,
-                    imgui_renderer: &mut imgui_renderer,
-                    widget: &mut gui,
-                    render_target: &frame.view,
-                }.encode(&mut renderer, &mut encoder);
-
-                renderer.queue.submit(std::iter::once(encoder.finish()));
+                let _ = imgui_pass.perform(&mut gui, (
+                    &renderer,
+                    &mut window_state,
+                    &frame.output.view,
+                ));
 
             },
 

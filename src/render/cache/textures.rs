@@ -1,6 +1,5 @@
 
 use crate::render::{
-    self,
     bytes,
     cache::AssetCache,
 };
@@ -25,15 +24,6 @@ enum Raw {
     VecU16(Vec<u16>),
     VecU8(Vec<u8>),
 }
-
-
-pub struct Texture {
-    handle: wgpu::Texture,
-    desc: wgpu::TextureDescriptor<'static>,
-    view: wgpu::TextureView,
-}
-
-
 
 pub struct TextureCache {
     device: &'static wgpu::Device,

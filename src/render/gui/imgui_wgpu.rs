@@ -55,7 +55,7 @@ impl ImguiTexture {
     }
 }
 
-pub struct ImguiRenderer {
+pub struct ImguiPass {
     pipeline: RenderPipeline,
     uniform_buffer: Buffer,
     uniform_bind_group: BindGroup,
@@ -66,15 +66,29 @@ pub struct ImguiRenderer {
     vertex_buffers: Vec<Buffer>,
 }
 
-impl ImguiRenderer {
-  
-    /// Create an entirely new imgui wgpu renderer.
-    pub fn new(
-        core: &mut render::Core,
-        format: TextureFormat,
-        clear_color: Option<Color>,
-    ) -> Self {
-        
+
+impl<'p> render::Pass<'p> for ImguiPass {
+
+    type Input = (
+        render::With<&'p render::Core>,
+        render::With<&'p mut window::WindowState>,
+        render::AnyAttachment,
+    );
+
+    type Output = ();
+
+    type Config = Option<wgpu::Color>; // clear color
+
+    type Params = &'p mut dyn gui::Widget; // the gui to be drawn
+
+
+    fn construct(clear_color: Option<wgpu::Color>, input: render::InputDesc<'p, Self>) -> (Self, render::OutputDesc<'p, Self>) {
+        let (
+            core,
+            window,
+            target,
+        ) = input;
+
         // Load shaders.
         let vs_module = core.shaders.load("imgui.vert");
         let fs_module = core.shaders.load("imgui.frag");
@@ -149,7 +163,7 @@ impl ImguiRenderer {
             }),
             primitive_topology: PrimitiveTopology::TriangleList,
             color_states: &[ColorStateDescriptor {
-                format,
+                format: target.format(),
                 color_blend: BlendDescriptor {
                     src_factor: BlendFactor::SrcAlpha,
                     dst_factor: BlendFactor::OneMinusSrcAlpha,
@@ -180,7 +194,7 @@ impl ImguiRenderer {
             alpha_to_coverage_enabled: false,
         });
 
-        Self {
+        let mut pass = Self {
             pipeline,
             uniform_buffer,
             uniform_bind_group,
@@ -189,14 +203,58 @@ impl ImguiRenderer {
             clear_color,
             vertex_buffers: vec![],
             index_buffers: vec![],
-        }
+        };
+
+        pass.build_font_texture(core, &mut window.imgui);
+
+        (pass, ())
     }
+
+    fn perform(self: &'p mut Self, widget: Self::Params, input: render::InputHandle<'p, Self>) -> render::OutputHandle<'p, Self> {
+        let (
+            core,
+            window,
+            target,
+        ) = input;
+
+        let window::WindowState {
+            ref mut imgui,
+            ref mut platform,
+            ref     window,
+            ref     lua,
+        } = window;
+        
+        platform.prepare_frame(imgui.io_mut(), window)
+            .expect("Failed to prepare imgui frame.");
+
+        let ui = imgui.frame();
+
+        let mut encoder = core.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Imgui"),
+        });
+
+        widget.compose(&ui, lua);
+
+        platform.prepare_render(&ui, window);
+
+        let draw_data = ui.render();
+        self.render(draw_data, core, &mut encoder, target);
+
+        core.queue.submit(std::iter::once(
+            encoder.finish()
+        ));
+    }
+    
+}
+
+
+impl ImguiPass {
 
     /// Render the current imgui frame.
     pub fn render<'r>(
         &'r mut self,
         draw_data: &DrawData,
-        core: &mut render::Core,
+        core: &render::Core,
         encoder: &'r mut CommandEncoder,
         view: &TextureView,
     ) {
@@ -329,7 +387,7 @@ impl ImguiRenderer {
     /// Updates the texture on the GPU corresponding to the current imgui font atlas.
     ///
     /// This has to be called after loading a font.
-    pub fn build_font_texture(&mut self, core: &mut render::Core, imgui: &mut Context) {
+    pub fn build_font_texture(&mut self, core: &render::Core, imgui: &mut Context) {
         let mut atlas = imgui.fonts();
         let handle = atlas.build_rgba32_texture();
         let font_texture_id =
@@ -341,7 +399,7 @@ impl ImguiRenderer {
     /// Creates and uploads a new wgpu texture made from the imgui font atlas.
     pub fn upload_texture(
         &mut self,
-        core: &mut render::Core,
+        core: &render::Core,
         data: &[u8],
         width: u32,
         height: u32,
@@ -384,46 +442,5 @@ impl ImguiRenderer {
         
         let texture = ImguiTexture::new(texture, &self.texture_layout, core.device);
         self.textures.insert(texture)
-    }
-}
-
-
-
-//
-//
-// Gui Rendering
-//
-//
-
-
-pub struct ImguiStage<'r, W: gui::Widget> {
-    pub window_state: &'r mut window::WindowState,
-    pub imgui_renderer: &'r mut ImguiRenderer,
-    pub widget: &'r mut W,
-    pub render_target: &'r TextureView,
-}
-
-impl<W: gui::Widget> ImguiStage<'_, W> {
-    pub fn encode(self, core: &mut render::Core, encoder: &mut CommandEncoder) {
-        
-        let window::WindowState {
-            ref mut imgui,
-            ref mut platform,
-            ref     window,
-            ref     lua,
-        } = self.window_state;
-        
-        platform.prepare_frame(imgui.io_mut(), window)
-            .expect("Failed to prepare imgui frame.");
-
-        let ui = imgui.frame();
-
-        self.widget.compose(&ui, lua);
-
-        platform.prepare_render(&ui, window);
-
-        let draw_data = ui.render();
-        self.imgui_renderer.render(draw_data, core, encoder, self.render_target);
-
     }
 }
