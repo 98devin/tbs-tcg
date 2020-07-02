@@ -9,6 +9,26 @@ pub enum Borrow<'r, R> {
     Borrowed(&'r R),
 }
 
+
+impl<'r, R> Borrow<'r, R> {
+
+    #[inline]
+    pub fn borrowed<'me: 'r>(self: &'me Self) -> Self {
+        Borrow::Borrowed(&self)
+    }
+
+    #[inline]
+    pub fn try_as_mut(&mut self) -> Option<&mut R> {
+        match self {
+            Borrow::Owned(r) => Some(r),
+            Borrow::Borrowed(_) => None,
+        }
+    }
+
+}
+
+
+
 impl<R> std::ops::Deref for Borrow<'_, R> {
     type Target = R;
     fn deref(&self) -> &Self::Target {
@@ -25,7 +45,6 @@ impl<R> AsRef<R> for Borrow<'_, R> {
     }
 }
 
-
 impl<R> From<R> for Borrow<'_, R> {
     fn from(r: R) -> Self {
         Borrow::Owned(r)
@@ -37,3 +56,10 @@ impl<'r, R> From<&'r R> for Borrow<'r, R> {
         Borrow::Borrowed(r)
     }
 }
+
+impl<R> std::borrow::Borrow<R> for Borrow<'_, R> {
+    fn borrow(&self) -> &R {
+        &self
+    }
+}
+

@@ -1,22 +1,22 @@
 
 #version 450
 
-out gl_PerVertex {
-    vec4 gl_Position;
-}; 
+layout(set = 0, binding = 0) uniform texture2D u_Texture;
+layout(set = 0, binding = 1) uniform sampler   u_Sampler;
 
-layout(location = 0) out vec2 v_Texcoord;
+layout(location = 0) in  vec2 v_Texcoord;
 
 
-const vec2[3] v_Coords = vec2[3](
-    vec2(0.0, 0.0),
-    vec2(2.0, 0.0),
-    vec2(0.0, 2.0)
-);
+layout(location = 0) out vec4 f_Color;
+
 
 void main()
 {
-    vec2 coord = v_Coords[gl_VertexIndex];
-    gl_Position = vec4(coord, 0.0, 1.0);
-    v_Texcoord = coord;
+    // identity post-process (with linear scaling)
+    f_Color = mix(
+        vec4(v_Texcoord, 0.0, 1.0),
+        1.0 - texture(sampler2D(u_Texture, u_Sampler), v_Texcoord),
+        0.5
+    );
+    // f_Color = ;
 }

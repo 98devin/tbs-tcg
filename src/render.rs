@@ -492,10 +492,57 @@ impl<'p> Pass<'p> for BasicPass {
 }
 
 
+/// The pass which constructs/holds an appropriately-sized render target texture,
+/// independent of the resulting screen size (which is filled by PostPass). 
+pub struct PrePass {
+    pub hdr_texture: wgpu::Texture,
+}
+
+impl<'p> Pass<'p> for PrePass {
+
+    type Input = &'p wgpu::SwapChainFrame;
+    type Output = Borrow<wgpu::TextureView>;
+
+    type Config = (&'p Core, f64); // scaling ratio 
+    type Params = ();
+
+
+    fn construct(config: Self::Config, input: InputDesc<'p, Self>) -> (Self, OutputDesc<'p, Self>) {
+        let (core, scale) = config;
+        let schain = input;
+
+        let hdr_texture_desc = wgpu::TextureDescriptor {
+            label: Some("Main render target"),
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float,
+            mip_level_count: 1,
+            usage: wgpu::TextureUsage::OUTPUT_ATTACHMENT | wgpu::TextureUsage::SAMPLED,
+            sample_count: 1,
+            size: wgpu::Extent3d {
+                width: (schain.width as f64 * scale) as u32,
+                height: (schain.height as f64 * scale) as u32,
+                depth: 1,
+            },
+        };
+
+        let hdr_texture = core.device.create_texture(&hdr_texture_desc);
+
+        let pass = Self { hdr_texture };
+
+        (pass, hdr_texture_desc.into())
+    }
+
+    fn perform(self: &'p mut Self, _: (), _: InputHandle<'p, Self>) -> OutputHandle<'p, Self> {
+        self.hdr_texture.create_default_view().into()
+    }
+
+}
+
+
 
 pub struct PostPass {
     pipeline: wgpu::RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    tex_group: wgpu::BindGroup,
 }
 
 impl<'p> Pass<'p> for PostPass {
@@ -528,7 +575,7 @@ impl<'p> Pass<'p> for PostPass {
         });
 
         pass.set_pipeline(&self.pipeline);
-        pass.set_bind_group(0, &self.bind_group, &[]);
+        pass.set_bind_group(0, &self.tex_group, &[]);
         pass.draw(0..3, 0..1);
 
         drop(pass); // end borrow
@@ -569,7 +616,7 @@ impl<'p> Pass<'p> for PostPass {
 
         let sampler = core.device.create_sampler(&sample_desc);
 
-        let bind_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let tex_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Postpass bind group"),
             layout: &tex_layout,
             bindings: &[
@@ -637,10 +684,60 @@ impl<'p> Pass<'p> for PostPass {
 
         let pass = Self {
             pipeline,
-            bind_group,
+            tex_group,
         };
 
         (pass, ())
+    }
+
+}
+
+
+
+pub struct MainPass {
+    pub pre: PrePass,
+    pub basic: BasicPass,
+    pub post: PostPass,
+}
+
+
+impl<'p> Pass<'p> for MainPass {
+
+    type Input  = (With<&'p Core>, &'p wgpu::SwapChainFrame);
+    type Output = &'p wgpu::SwapChainFrame;    
+
+    type Config = f64; // scaling ratio for render quality
+    type Params = ();
+
+    fn construct(config: Self::Config, input: InputDesc<'p, Self>) -> (Self, OutputDesc<'p, Self>) {
+
+        let (core, schain) = input;
+        let scale = config;
+
+        let (pre, hdr_target) = PrePass::construct((core, scale), schain);
+
+        let (basic, _) = BasicPass::construct((), (core, AnyAttachmentDescriptor::TextureView(&hdr_target)));
+
+        let (post, ()) = PostPass::construct((&pre.hdr_texture).into(), (core, schain));
+
+        let pass = Self {
+            pre, basic, post,
+        };
+
+        (pass, schain)
+    }
+    
+    fn perform(self: &'p mut Self, _: (), input: InputHandle<'p, Self>) -> OutputHandle<'p, Self> {
+        
+        let (core, schain) = input;
+        
+        let hdr_view = self.pre.perform((), schain);
+
+        let _ = self.basic.perform((), (core, &hdr_view));
+
+        let () = self.post.perform((), (core, schain));
+
+        schain
     }
 
 }

@@ -22,11 +22,8 @@ fn main() -> ! {
     
     let mut renderer = futures::executor::block_on(render::Core::init(&mut window_state));
     
-    let (mut basic_pass, _) = 
-        render::BasicPass::construct((), (
-            &renderer, 
-            SwapChain(&renderer.sc_desc),
-        ));
+    let (mut main_pass, _) =
+        render::MainPass::construct(0.25, (&renderer, &renderer.sc_desc));
 
     let (mut imgui_pass, _) =
         gui::imgui_wgpu::ImguiPass::construct(None, (
@@ -69,7 +66,7 @@ fn main() -> ! {
             Event::DeviceEvent { event, .. } => match *event {
                 DeviceEvent::MouseMotion { delta } if mouse_down && !imgui_wants_mouse => {
                     if modifiers.shift() {
-                        basic_pass.camera.translate_rel(
+                        main_pass.basic.camera.translate_rel(
                             if modifiers.ctrl() { 
                                 glm::vec3(delta.0 as f32 / 100.0, 0.0, delta.1 as f32 / 100.0)
                             } else {
@@ -78,8 +75,8 @@ fn main() -> ! {
                         );
                     }
                     else {
-                        basic_pass.camera.gimbal_lr(delta.0 as f32 / 100.0);
-                        basic_pass.camera.gimbal_ud(-delta.1 as f32 / 100.0);
+                        main_pass.basic.camera.gimbal_lr(delta.0 as f32 / 100.0);
+                        main_pass.basic.camera.gimbal_ud(-delta.1 as f32 / 100.0);
                     }
                 },
 
@@ -102,9 +99,9 @@ fn main() -> ! {
                     // window.set_inner_size(new_size); 
                     renderer.handle_window_resize(new_size);
 
-                    let _ = basic_pass.refresh((), (
+                    let _ = main_pass.refresh(0.25, (
                         &renderer,
-                        SwapChain(&renderer.sc_desc),
+                        &renderer.sc_desc,
                     ));
 
                     let _ = imgui_pass.refresh(None, (
@@ -135,9 +132,9 @@ fn main() -> ! {
                 } if !imgui_wants_mouse => {
                     match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, ud) =>
-                            basic_pass.camera.zoom(ud / 25.0),
+                            main_pass.basic.camera.zoom(ud / 25.0),
                         winit::event::MouseScrollDelta::PixelDelta(winit::dpi::LogicalPosition { y: ud, .. }) =>
-                            basic_pass.camera.zoom(ud as f32 / 100.0),
+                        main_pass.basic.camera.zoom(ud as f32 / 100.0),
                     }
                 }
 
@@ -152,17 +149,17 @@ fn main() -> ! {
                     let ratio = last_frame_duration.as_secs_f32();
                     match k {
                         VirtualKeyCode::Left =>
-                            basic_pass.camera.gimbal_lr(-10.0 * ratio),
+                            main_pass.basic.camera.gimbal_lr(-10.0 * ratio),
                         VirtualKeyCode::Right =>
-                            basic_pass.camera.gimbal_lr(10.0 * ratio),
+                            main_pass.basic.camera.gimbal_lr(10.0 * ratio),
                         VirtualKeyCode::Up =>
-                            basic_pass.camera.gimbal_ud(-10.0 * ratio),
+                            main_pass.basic.camera.gimbal_ud(-10.0 * ratio),
                         VirtualKeyCode::Down =>
-                            basic_pass.camera.gimbal_ud(10.0 * ratio),
+                            main_pass.basic.camera.gimbal_ud(10.0 * ratio),
                         VirtualKeyCode::Equals =>
-                            basic_pass.camera.zoom(0.5 * ratio),
+                            main_pass.basic.camera.zoom(0.5 * ratio),
                         VirtualKeyCode::Minus =>
-                            basic_pass.camera.zoom(-0.5 * ratio),
+                            main_pass.basic.camera.zoom(-0.5 * ratio),
 
                         VirtualKeyCode::Escape =>
                             *control_flow = ControlFlow::Exit,
@@ -188,7 +185,7 @@ fn main() -> ! {
                     }
                 };
 
-                let _ = basic_pass.perform((), (
+                let _ = main_pass.perform((), (
                     &renderer,
                     &frame.output.view,
                 ));
