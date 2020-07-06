@@ -30,16 +30,19 @@ impl Core {
                 power_preference: wgpu::PowerPreference::Default,
                 compatible_surface: Some(&surface),
             },
-            wgpu::UnsafeExtensions::disallow(),
+            unsafe { wgpu::UnsafeExtensions::allow() },
         )
         .await
         .expect("Failed to request wgpu::Adapter.");
 
         let adapter_info = adapter.get_info();
-        println!("{:?}", adapter_info);
+        eprintln!("{:?}", adapter_info);
 
         let (device, queue) = adapter.request_device(
-            &Default::default(), 
+            &wgpu::DeviceDescriptor {
+                extensions: wgpu::Extensions::BINDING_INDEXING,
+                ..Default::default()
+            },
             None, // trace_path
         )
         .await
@@ -50,6 +53,10 @@ impl Core {
         // a Drop implementation for RenderCore could also handle this.
         let device = Box::leak(Box::new(device));
         let queue  = Box::leak(Box::new(queue));
+
+        eprintln!("{:?}", device.extensions());
+        eprintln!("{:?}", device.limits());
+        eprintln!("{:?}", device.capabilities());
 
         let size = window_state.window.inner_size();
         let sc_desc = wgpu::SwapChainDescriptor {

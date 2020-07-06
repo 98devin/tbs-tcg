@@ -232,44 +232,19 @@ pub struct BasicPass {
     pub project: Uniform<glm::Mat4>,
     u_cam_group: wgpu::BindGroup,
     u_tex_group: wgpu::BindGroup,
+    u_norm_group: wgpu::BindGroup,
+
+    pipeline_layout: wgpu::PipelineLayout,
     pub pipeline: wgpu::RenderPipeline,
     pub zbuffer: wgpu::Texture,
 }
 
-impl<'p> Pass<'p> for BasicPass {
-    
-    type Input =
-        ( With<&'p Core>
-        , AnyAttachment // color attachment
-        );
-    
-    type Output =
-        Borrow<wgpu::Texture>; // depth buffer
 
-    type Params =
-        ();
+impl BasicPass {
 
-    type Config =
-        ();
-
-    fn construct(_: (), input: InputDesc<'p, Self>) -> (Self, OutputDesc<'p, Self>) {
-        let (core, target) = input;
-
-        let camera = Uniform::new(core.device, camera::GimbalCamera::new(
-            glm::vec3(0.0,  0.0, -5.0),
-            glm::vec3(0.0,  0.0,  0.0),
-            glm::vec3(0.0, -1.0,  0.0),
-        ));
-
-        let project = Uniform::new(core.device, 
-            glm::perspective_fov_lh_zo(
-                120.0, 
-                target.width() as f32, 
-                target.height() as f32, 
-                1.0, 
-                100.0,
-            ),
-        );
+    fn build_pipeline(core: &Core, target: AnyAttachmentDescriptor, layout: &wgpu::PipelineLayout)
+        -> (wgpu::RenderPipeline, wgpu::Texture)
+    {
 
         let zbuffer_desc = wgpu::TextureDescriptor {
             label: Some("BasicRenderer depth buffer"),
@@ -286,56 +261,6 @@ impl<'p> Pass<'p> for BasicPass {
         };
 
         let zbuffer = core.device.create_texture(&zbuffer_desc);
-
-        let u_cam_descriptor = wgpu::BindGroupLayoutDescriptor {
-            label: Some("Camera uniform"),
-            bindings: &[
-                wgpu::BindGroupLayoutEntry::new(
-                    0, wgpu::ShaderStage::all(),
-                    Uniform::<camera::GimbalCamera>::bind_type(),
-                ),
-                wgpu::BindGroupLayoutEntry::new(
-                    1, wgpu::ShaderStage::all(),
-                    Uniform::<glm::Mat4>::bind_type(),
-                ),
-            ],
-        };
-
-        let u_cam_layout = core.device.create_bind_group_layout(&u_cam_descriptor);
-
-        let u_cam_bind_desc = wgpu::BindGroupDescriptor {
-            label: Some("Camera uniform"),
-            layout: &u_cam_layout,
-            bindings: &[
-                wgpu::Binding { binding: 0, resource: camera.bind() },
-                wgpu::Binding { binding: 1, resource: project.bind() },
-            ],
-        };
-
-        let u_cam_group = core.device.create_bind_group(&u_cam_bind_desc);
-
-        let tex = core.textures.load("gray_marble.tif");
-
-        let u_tex_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Texture uniform"),
-            layout: &tex.bind_layout,
-            bindings: &[
-                wgpu::Binding {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&tex.texture.create_default_view()),
-                },
-                wgpu::Binding {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&tex.sampler),
-                },
-            ],
-        });
-
-        let layout_descriptor = wgpu::PipelineLayoutDescriptor {
-            bind_group_layouts: &[&u_cam_layout, &tex.bind_layout],
-        };
-
-        let layout = core.device.create_pipeline_layout(&layout_descriptor);
 
         let vert_module = core.shaders.load("basic.vert");
         let frag_module = core.shaders.load("basic.frag");
@@ -414,16 +339,132 @@ impl<'p> Pass<'p> for BasicPass {
 
         let pipeline = core.device.create_render_pipeline(&render_descriptor);
 
+        (pipeline, zbuffer)
+    }
+
+}
+
+
+impl<'p> Pass<'p> for BasicPass {
+    
+    type Input =
+        ( With<&'p Core>
+        , AnyAttachment // color attachment
+        );
+    
+    type Output = (); // depth buffer
+
+    type Params =
+        ();
+
+    type Config =
+        ();
+
+    fn construct(_: (), input: InputDesc<'p, Self>) -> (Self, OutputDesc<'p, Self>) {
+        let (core, target) = input;
+
+        let camera = Uniform::new(core.device, camera::GimbalCamera::new(
+            glm::vec3(0.0,  0.0, -5.0),
+            glm::vec3(0.0,  0.0,  0.0),
+            glm::vec3(0.0, -1.0,  0.0),
+        ));
+
+        let project = Uniform::new(core.device, 
+            glm::perspective_fov_lh_zo(
+                120.0, 
+                target.width() as f32, 
+                target.height() as f32, 
+                1.0, 
+                100.0,
+            ),
+        );
+
+        let u_cam_descriptor = wgpu::BindGroupLayoutDescriptor {
+            label: Some("Camera uniform"),
+            bindings: &[
+                wgpu::BindGroupLayoutEntry::new(
+                    0, wgpu::ShaderStage::all(),
+                    Uniform::<camera::GimbalCamera>::bind_type(),
+                ),
+                wgpu::BindGroupLayoutEntry::new(
+                    1, wgpu::ShaderStage::all(),
+                    Uniform::<glm::Mat4>::bind_type(),
+                ),
+            ],
+        };
+
+        let u_cam_layout = core.device.create_bind_group_layout(&u_cam_descriptor);
+
+        let u_cam_bind_desc = wgpu::BindGroupDescriptor {
+            label: Some("Camera uniform"),
+            layout: &u_cam_layout,
+            bindings: &[
+                wgpu::Binding { binding: 0, resource: camera.bind() },
+                wgpu::Binding { binding: 1, resource: project.bind() },
+            ],
+        };
+
+        let u_cam_group = core.device.create_bind_group(&u_cam_bind_desc);
+
+        let tex = core.textures.load("gray_marble.tif");
+        
+        let u_tex_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Texture uniform"),
+            layout: &tex.bind_layout,
+            bindings: &[
+                wgpu::Binding {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&tex.texture.create_default_view()),
+                },
+                wgpu::Binding {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&tex.sampler),
+                },
+            ],
+        });
+
+
+        let norm = core.textures.load("gray_marble_normal.tif");
+
+        let u_norm_group = core.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Normal map uniform"),
+            layout: &norm.bind_layout,
+            bindings: &[
+                wgpu::Binding {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&norm.texture.create_default_view()),
+                },
+                wgpu::Binding {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&norm.sampler),
+                },
+            ],
+        });
+
+        let layout_descriptor = wgpu::PipelineLayoutDescriptor {
+            bind_group_layouts: &[
+                &u_cam_layout,
+                &tex.bind_layout,
+                &norm.bind_layout,
+            ],
+        };
+
+        let layout = core.device.create_pipeline_layout(&layout_descriptor);
+
+        let (pipeline, zbuffer) = BasicPass::build_pipeline(core, target, &layout);
+
         let pass = Self {
             camera,
             project,
             u_cam_group,
             u_tex_group,
+            u_norm_group,
+            pipeline_layout: layout,
             pipeline,
             zbuffer,
         };
 
-        (pass, zbuffer_desc.into())
+        (pass, ())
     }
 
 
@@ -473,6 +514,7 @@ impl<'p> Pass<'p> for BasicPass {
         pass.set_pipeline(&self.pipeline);
         pass.set_bind_group(0, &self.u_cam_group, &[]);
         pass.set_bind_group(1, &self.u_tex_group, &[]);
+        pass.set_bind_group(2, &self.u_norm_group, &[]);
         
         pass.set_index_buffer(model.indices.slice(..));
         pass.set_vertex_buffer(0, model.positions.slice(..));
@@ -486,9 +528,17 @@ impl<'p> Pass<'p> for BasicPass {
         core.queue.submit(std::iter::once(
             encoder.finish()
         ));
-
-        (&self.zbuffer).into()
     }
+
+    fn refresh(self: &'p mut Self, _: (), input: InputDesc<'p, Self>) -> OutputDesc<'p, Self>
+    {
+        let (core, target) = input;
+        let (pipeline, zbuffer) = BasicPass::build_pipeline(core, target, &self.pipeline_layout);
+
+        self.pipeline = pipeline;
+        self.zbuffer = zbuffer;
+    }
+
 }
 
 
@@ -740,4 +790,19 @@ impl<'p> Pass<'p> for MainPass {
         schain
     }
 
+    fn refresh(self: &'p mut Self, config: Self::Config, input: InputDesc<'p, Self>) -> OutputDesc<'p, Self>
+    {
+        let (core, schain) = input;
+        let scale = config;
+
+        let hdr_target = self.pre.refresh((core, scale), schain);
+
+        self.basic.refresh((), (core, AnyAttachmentDescriptor::TextureView(&hdr_target)));
+        self.post.refresh((&self.pre.hdr_texture).into(), (core, schain));
+
+        schain
+    }
+
+
+    
 }

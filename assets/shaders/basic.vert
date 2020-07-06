@@ -26,8 +26,9 @@ out gl_PerVertex {
 
 void main()
 {
-    gl_Position = proj * camera.view * vec4(a_Position, 1.0);
-    v_Position = a_Position;
+    vec4 v_Wposition = camera.view * vec4(a_Position, 1.0);
+    v_Position = v_Wposition.xyz;
+    gl_Position = proj * v_Wposition;
     v_Texcoord = a_Texcoord;
     v_Normal   = a_Normal;
 }

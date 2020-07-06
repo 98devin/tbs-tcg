@@ -1,4 +1,5 @@
 
+use nalgebra as na;
 use nalgebra_glm as glm;
 use winit::{
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent, DeviceEvent},
@@ -14,16 +15,24 @@ use render::window::WindowState;
 use render::gui;
 
 
+enum EngineEvent {
+    RefreshRenderPasses {
+        clear_asset_caches: bool,
+    },
+}
+
+
+
 fn main() -> ! {
     
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::<EngineEvent>::with_user_event();
 
     let mut window_state = WindowState::new(&event_loop);
     
     let mut renderer = futures::executor::block_on(render::Core::init(&mut window_state));
     
     let (mut main_pass, _) =
-        render::MainPass::construct(0.25, (&renderer, &renderer.sc_desc));
+        render::MainPass::construct(1.0, (&renderer, &renderer.sc_desc));
 
     let (mut imgui_pass, _) =
         gui::imgui_wgpu::ImguiPass::construct(None, (
@@ -44,6 +53,10 @@ fn main() -> ! {
     let mut mouse_down = false;
     let mut modifiers = winit::event::ModifiersState::empty();
 
+    let mut debug_view: bool = true;
+
+    let event_proxy = event_loop.create_proxy();
+
     // mainloop
     event_loop.run(move |event, _, control_flow| {
 
@@ -53,8 +66,8 @@ fn main() -> ! {
             &event,
         );
 
-        let imgui_wants_mouse = window_state.imgui.io().want_capture_mouse;
-        let imgui_wants_kbord = window_state.imgui.io().want_capture_keyboard;
+        let imgui_wants_mouse = debug_view && window_state.imgui.io().want_capture_mouse;
+        let imgui_wants_kbord = debug_view && window_state.imgui.io().want_capture_keyboard;
         
         match &event {
             Event::NewEvents(_) => {
@@ -83,6 +96,32 @@ fn main() -> ! {
                 _ => (),
             },
 
+            Event::UserEvent(e_event) => match *e_event {
+                EngineEvent::RefreshRenderPasses { clear_asset_caches } => {
+                    
+                    eprintln!("Refreshing render pipelines...");
+
+                    if clear_asset_caches {
+                        eprintln!("Resetting asset caches...");
+                        use render::cache::AssetCache;
+                        renderer.shaders.clear();
+                        renderer.textures.clear();
+                        renderer.models.clear();
+                    }
+
+                    let _ = main_pass.refresh(1.0, (
+                        &renderer,
+                        &renderer.sc_desc,
+                    ));
+
+                    let _ = imgui_pass.refresh(None, (
+                        &renderer,
+                        &mut window_state,
+                        SwapChain(&renderer.sc_desc),
+                    ));
+                }
+            }
+
             Event::WindowEvent { event, .. } => match *event {
 
                 WindowEvent::ModifiersChanged(new_modifiers) =>
@@ -98,19 +137,12 @@ fn main() -> ! {
                     // Fortunately it also appears to be unnecessary...
                     // window.set_inner_size(new_size); 
                     renderer.handle_window_resize(new_size);
-
-                    let _ = main_pass.refresh(0.25, (
-                        &renderer,
-                        &renderer.sc_desc,
-                    ));
-
-                    let _ = imgui_pass.refresh(None, (
-                        &renderer,
-                        &mut window_state,
-                        SwapChain(&renderer.sc_desc),
-                    ));
-
                     eprintln!("resized: {:?}", new_size);
+                    event_proxy.send_event(
+                        EngineEvent::RefreshRenderPasses {
+                            clear_asset_caches: false,
+                        }
+                    ).ok().unwrap();
                 },
 
                 WindowEvent::CloseRequested =>
@@ -164,6 +196,16 @@ fn main() -> ! {
                         VirtualKeyCode::Escape =>
                             *control_flow = ControlFlow::Exit,
 
+                        VirtualKeyCode::Grave =>
+                            debug_view = !debug_view,
+
+                        VirtualKeyCode::R if modifiers.ctrl() =>
+                            event_proxy.send_event(
+                                EngineEvent::RefreshRenderPasses {
+                                    clear_asset_caches: true,
+                                }
+                            ).ok().unwrap(),
+
                         _ => (),
                     }
                 }
@@ -190,11 +232,13 @@ fn main() -> ! {
                     &frame.output.view,
                 ));
 
-                let _ = imgui_pass.perform(&mut gui, (
-                    &renderer,
-                    &mut window_state,
-                    &frame.output.view,
-                ));
+                if debug_view {
+                    let _ = imgui_pass.perform(&mut gui, (
+                        &renderer,
+                        &mut window_state,
+                        &frame.output.view,
+                    ));
+                }
 
             },
 

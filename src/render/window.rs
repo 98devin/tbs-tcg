@@ -21,7 +21,7 @@ pub struct WindowState {
 
 impl WindowState {
     
-    pub fn new(event_loop: &EventLoop<()>) -> Self {
+    pub fn new<T>(event_loop: &EventLoop<T>) -> Self {
 
         let window = Window::new(&event_loop)
             .expect("Failed to create window.");

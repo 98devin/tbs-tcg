@@ -21,5 +21,5 @@ out gl_PerVertex {
 void main() {
     v_UV = a_UV;
     v_Color = vec4(a_Color) / 255.0;
-    gl_Position = u_Matrix * vec4(a_Pos.xy, 0.0, 1.0);
+    gl_Position = u_Matrix * vec4(a_Pos, 0.0, 1.0);
 }
