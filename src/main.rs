@@ -1,4 +1,5 @@
 
+use nalgebra as na;
 use nalgebra_glm as glm;
 use winit::{
     event::{ElementState, Event, KeyboardInput, VirtualKeyCode, WindowEvent, DeviceEvent},
@@ -6,33 +7,39 @@ use winit::{
 };
 
 pub mod render;
+pub mod util;
 
-use render::RenderCore;
+
+use render::{Pass, AnyAttachmentDescriptor::*};
 use render::window::WindowState;
 use render::gui;
 
 
+enum EngineEvent {
+    RefreshRenderPasses {
+        clear_asset_caches: bool,
+    },
+}
+
+
+
 fn main() -> ! {
     
-    let event_loop = EventLoop::new();
+    let event_loop = EventLoop::<EngineEvent>::with_user_event();
 
     let mut window_state = WindowState::new(&event_loop);
     
-    let mut renderer = futures::executor::block_on(RenderCore::init(&mut window_state));
+    let mut renderer = futures::executor::block_on(render::Core::init(&mut window_state));
     
-    let sc_format = renderer.sc_desc.format;
+    let (mut main_pass, _) =
+        render::MainPass::construct(1.0, (&renderer, &renderer.sc_desc));
 
-    let mut basic_renderer = render::BasicRenderer::new(&mut renderer);
-    let mut imgui_renderer = gui::imgui_wgpu::ImguiRenderer::new(
-        &mut renderer,
-        sc_format,
-        None,
-    );
-
-    imgui_renderer.build_font_texture(
-        &mut renderer,
-        &mut window_state.imgui
-    );
+    let (mut imgui_pass, _) =
+        gui::imgui_wgpu::ImguiPass::construct(None, (
+            &renderer,
+            &mut window_state,
+            SwapChain(&renderer.sc_desc),
+        ));
 
     eprintln!("initial size: {:?}", window_state.window.inner_size());
     eprintln!("initial scale: {}", window_state.platform.hidpi_factor());
@@ -48,6 +55,10 @@ fn main() -> ! {
     let mut mouse_down = false;
     let mut modifiers = winit::event::ModifiersState::empty();
 
+    let mut debug_view: bool = true;
+
+    let event_proxy = event_loop.create_proxy();
+
     // mainloop
     event_loop.run(move |event, _, control_flow| {
 
@@ -57,8 +68,8 @@ fn main() -> ! {
             &event,
         );
 
-        let imgui_wants_mouse = window_state.imgui.io().want_capture_mouse;
-        let imgui_wants_kbord = window_state.imgui.io().want_capture_keyboard;
+        let imgui_wants_mouse = debug_view && window_state.imgui.io().want_capture_mouse;
+        let imgui_wants_kbord = debug_view && window_state.imgui.io().want_capture_keyboard;
         
         match &event {
             Event::NewEvents(_) => {
@@ -70,7 +81,7 @@ fn main() -> ! {
             Event::DeviceEvent { event, .. } => match *event {
                 DeviceEvent::MouseMotion { delta } if mouse_down && !imgui_wants_mouse => {
                     if modifiers.shift() {
-                        basic_renderer.camera.translate_rel(
+                        main_pass.basic.camera.translate_rel(
                             if modifiers.ctrl() { 
                                 glm::vec3(delta.0 as f32 / 100.0, 0.0, delta.1 as f32 / 100.0)
                             } else {
@@ -79,13 +90,39 @@ fn main() -> ! {
                         );
                     }
                     else {
-                        basic_renderer.camera.gimbal_lr(delta.0 as f32 / 100.0);
-                        basic_renderer.camera.gimbal_ud(-delta.1 as f32 / 100.0);
+                        main_pass.basic.camera.gimbal_lr(delta.0 as f32 / 100.0);
+                        main_pass.basic.camera.gimbal_ud(-delta.1 as f32 / 100.0);
                     }
                 },
 
                 _ => (),
             },
+
+            Event::UserEvent(e_event) => match *e_event {
+                EngineEvent::RefreshRenderPasses { clear_asset_caches } => {
+                    
+                    eprintln!("Refreshing render pipelines...");
+
+                    if clear_asset_caches {
+                        eprintln!("Resetting asset caches...");
+                        use render::cache::AssetCache;
+                        renderer.shaders.clear();
+                        renderer.textures.clear();
+                        renderer.models.clear();
+                    }
+
+                    let _ = main_pass.refresh(1.0, (
+                        &renderer,
+                        &renderer.sc_desc,
+                    ));
+
+                    let _ = imgui_pass.refresh(None, (
+                        &renderer,
+                        &mut window_state,
+                        SwapChain(&renderer.sc_desc),
+                    ));
+                }
+            }
 
             Event::WindowEvent { event, .. } => match *event {
 
@@ -103,8 +140,12 @@ fn main() -> ! {
                     // Fortunately it also appears to be unnecessary...
                     // window.set_inner_size(new_size); 
                     renderer.handle_window_resize(new_size);
-                    basic_renderer.adjust_screen_res(new_size);
                     eprintln!("resized: {:?}", new_size);
+                    event_proxy.send_event(
+                        EngineEvent::RefreshRenderPasses {
+                            clear_asset_caches: false,
+                        }
+                    ).ok().unwrap();
                 },
 
                 WindowEvent::CloseRequested =>
@@ -126,9 +167,9 @@ fn main() -> ! {
                 } if !imgui_wants_mouse => {
                     match delta {
                         winit::event::MouseScrollDelta::LineDelta(_, ud) =>
-                            basic_renderer.camera.zoom(ud / 25.0),
+                            main_pass.basic.camera.zoom(ud / 25.0),
                         winit::event::MouseScrollDelta::PixelDelta(winit::dpi::LogicalPosition { y: ud, .. }) =>
-                            basic_renderer.camera.zoom(ud as f32 / 100.0),
+                        main_pass.basic.camera.zoom(ud as f32 / 100.0),
                     }
                 }
 
@@ -143,20 +184,30 @@ fn main() -> ! {
                     let ratio = last_frame_duration.as_secs_f32();
                     match k {
                         VirtualKeyCode::Left =>
-                            basic_renderer.camera.gimbal_lr(-10.0 * ratio),
+                            main_pass.basic.camera.gimbal_lr(-10.0 * ratio),
                         VirtualKeyCode::Right =>
-                            basic_renderer.camera.gimbal_lr(10.0 * ratio),
+                            main_pass.basic.camera.gimbal_lr(10.0 * ratio),
                         VirtualKeyCode::Up =>
-                            basic_renderer.camera.gimbal_ud(-10.0 * ratio),
+                            main_pass.basic.camera.gimbal_ud(-10.0 * ratio),
                         VirtualKeyCode::Down =>
-                            basic_renderer.camera.gimbal_ud(10.0 * ratio),
+                            main_pass.basic.camera.gimbal_ud(10.0 * ratio),
                         VirtualKeyCode::Equals =>
-                            basic_renderer.camera.zoom(0.5 * ratio),
+                            main_pass.basic.camera.zoom(0.5 * ratio),
                         VirtualKeyCode::Minus =>
-                            basic_renderer.camera.zoom(-0.5 * ratio),
+                            main_pass.basic.camera.zoom(-0.5 * ratio),
 
                         VirtualKeyCode::Escape =>
                             *control_flow = ControlFlow::Exit,
+
+                        VirtualKeyCode::Grave =>
+                            debug_view = !debug_view,
+
+                        VirtualKeyCode::R if modifiers.ctrl() =>
+                            event_proxy.send_event(
+                                EngineEvent::RefreshRenderPasses {
+                                    clear_asset_caches: true,
+                                }
+                            ).ok().unwrap(),
 
                         _ => (),
                     }
@@ -172,25 +223,25 @@ fn main() -> ! {
             Event::RedrawRequested(_) => {
 
                 let frame = match renderer.swap_chain.get_next_frame() {
-                    Ok(frame) => frame.output,
+                    Ok(frame) => frame,
                     Err(_) => {
                         eprintln!("Dropped frame!");
                         return;
                     }
                 };
 
-                renderer.sequence()
-                    .draw(render::BasicStage {
-                        basic_renderer: &basic_renderer,
-                        render_target: &frame.view,
-                    })
-                    .draw(gui::imgui_wgpu::ImguiStage {
-                        window_state: &mut window_state,
-                        imgui_renderer: &mut imgui_renderer,
-                        widget: &mut gui,
-                        render_target: &frame.view,
-                    })
-                    .finish();
+                let _ = main_pass.perform((), (
+                    &renderer,
+                    &frame.output.view,
+                ));
+
+                if debug_view {
+                    let _ = imgui_pass.perform(&mut gui, (
+                        &renderer,
+                        &mut window_state,
+                        &frame.output.view,
+                    ));
+                }
 
             },
 

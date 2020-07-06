@@ -1,6 +1,8 @@
 
-use crate::render::cache::AssetCache;
-use crate::render::bytes;
+use crate::render::{
+    bytes,
+    cache::AssetCache,
+};
 
 use chashmap::CHashMap;
 
@@ -23,7 +25,6 @@ enum Raw {
     VecU8(Vec<u8>),
 }
 
-
 pub struct TextureCache {
     device: &'static wgpu::Device,
     queue:  &'static wgpu::Queue,
@@ -40,6 +41,7 @@ pub struct TextureCacheEntry {
 
 
 pub type TextureRef<'a> = chashmap::ReadGuard<'a, &'static str, TextureCacheEntry>;
+
 
 impl TextureCache {
 
