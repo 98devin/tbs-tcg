@@ -131,7 +131,7 @@ fn main() -> ! {
 
                 WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
                     window_state.update_scale_factor(scale_factor);
-                    imgui_renderer.build_font_texture(&mut renderer, &mut window_state.imgui);
+                    imgui_pass.build_font_texture(&mut renderer, &mut window_state.imgui);
                     eprintln!("updated scale factor: {}", scale_factor);
                 },
 
