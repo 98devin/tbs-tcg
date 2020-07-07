@@ -106,7 +106,7 @@ fn main() -> ! {
                     if clear_asset_caches {
                         eprintln!("Resetting asset caches...");
                         use render::cache::AssetCache;
-                        renderer.shaders.clear();
+                        renderer.shaders.invalidate("basic.frag");
                         renderer.textures.clear();
                         renderer.models.clear();
                     }

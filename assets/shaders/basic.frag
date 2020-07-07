@@ -66,12 +66,21 @@ void main()
     normal.y *= -1;
 
     mat3 perturb = cotangent_frame(normalize(v_Normal), camera.pos - v_Position, v_Texcoord);
+    mat3 view_perturb = cotangent_frame(normalize(v_Normal), v_Position, v_Texcoord);
 
     normal = perturb * normal;
-    // normal = vec4(inverse(transpose(camera.view)) * vec4(normal, 0.0)).xyz;
 
+    vec3 normal_color = normal*0.5+0.5;
+
+    vec3 view_normal = view_perturb * normal;
+
+    view_normal = vec4(inverse(transpose(camera.view)) * vec4(normal, 0.0)).xyz;
+    view_normal.z *= -1;
+
+    vec3 view_normal_color = view_normal*0.5+0.5;
 
     float angle_factor = pow(max(0.0, dot(normal, vec3(0.0, 0.0, 1.0))), 5.0);
 
-    f_Color = vec4(tex_color.rgb * mix(vec3(0.1), vec3(5.0), angle_factor), 1.0);
+    f_Color = vec4(view_normal_color, 1.0);
+    // f_Color = vec4(view_normal_color * mix(vec3(0.1), vec3(5.0), angle_factor), 1.0);
 }

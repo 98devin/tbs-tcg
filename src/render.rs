@@ -230,7 +230,8 @@ impl<'p> Resource<'p> for AnyAttachment {
 pub struct BasicPass {
     pub camera: Uniform<camera::GimbalCamera>,
     pub project: Uniform<glm::Mat4>,
-    u_cam_group: wgpu::BindGroup,
+
+    u_cam_group: wgpu::BindGroup,    
     u_tex_group: wgpu::BindGroup,
     u_norm_group: wgpu::BindGroup,
 
@@ -456,8 +457,10 @@ impl<'p> Pass<'p> for BasicPass {
         let pass = Self {
             camera,
             project,
+            
             u_cam_group,
             u_tex_group,
+
             u_norm_group,
             pipeline_layout: layout,
             pipeline,
@@ -533,6 +536,16 @@ impl<'p> Pass<'p> for BasicPass {
     fn refresh(self: &'p mut Self, _: (), input: InputDesc<'p, Self>) -> OutputDesc<'p, Self>
     {
         let (core, target) = input;
+  
+        *self.project =  
+            glm::perspective_fov_lh_zo(
+                120.0, 
+                target.width() as f32, 
+                target.height() as f32, 
+                1.0, 
+                100.0,
+            );
+  
         let (pipeline, zbuffer) = BasicPass::build_pipeline(core, target, &self.pipeline_layout);
 
         self.pipeline = pipeline;
